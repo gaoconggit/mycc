@@ -114,6 +114,8 @@ export class FeishuCommands {
             console.log(`[CC] 会话已更新: ${this._currentSessionId}`);
           }
 
+          const showToolUse = feishuChannel ? feishuChannel.getConfig().showToolUse !== false : true;
+
           if (streamingSession) {
             // 流式卡片模式：收集文本并实时更新
             if (data.type === "text" && data.text) {
@@ -125,6 +127,16 @@ export class FeishuCommands {
                 for (const block of content) {
                   if (block.type === "text" && block.text) {
                     accumulatedText += String(block.text);
+                  } else if (block.type === "tool_use" && showToolUse) {
+                    const name = block.name || "unknown";
+                    let toolCallText = `\n🔧 **${name}**`;
+                    if (block.input && Object.keys(block.input).length > 0) {
+                      const inputStr = JSON.stringify(block.input);
+                      toolCallText += inputStr.length > 100
+                        ? ` ${inputStr.substring(0, 100)}...`
+                        : ` ${inputStr}`;
+                    }
+                    accumulatedText += toolCallText + "\n";
                   }
                 }
                 await streamingSession.update(accumulatedText);
@@ -144,7 +156,7 @@ export class FeishuCommands {
                     const text = String(block.text);
                     console.log(`[CC] 发送文本: ${text.substring(0, 30)}...`);
                     await this.sendToFeishu(text);
-                  } else if (block.type === "tool_use") {
+                  } else if (block.type === "tool_use" && showToolUse) {
                     const name = block.name || "unknown";
                     let toolCallText = `**使用工具: ${name}**`;
                     if (block.input && Object.keys(block.input).length > 0) {

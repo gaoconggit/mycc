@@ -204,6 +204,166 @@ cursor: (516,703)  ocr: 277ms
 | 全屏 OCR（精确） | ~870ms |
 | 获取窗口列表 | < 50ms |
 
+---
+
+## Windows 版
+
+### 工具栈
+
+macOS 的 `cliclick` + `osascript` + `Vision Framework` 在 Windows 上的对应实现：
+
+| macOS | Windows |
+|-------|---------|
+| `ocr.py`（Vision Framework）| `ocr_win.py`（Windows.Media.Ocr WinRT）|
+| `cliclick` | `ctl_win.py`（pyautogui + Win32 API）|
+| `osascript` | `ctl_win.py activate/windows` |
+| `screencapture` | `ctl_win.py screenshot` |
+
+### 安装依赖
+
+```bash
+pip install winrt-runtime "winrt-Windows.Media.Ocr" "winrt-Windows.Graphics.Imaging" "winrt-Windows.Storage.Streams" "winrt-Windows.Foundation.Collections" mss pyautogui pyperclip pywin32
+```
+
+> OCR 还需要在「Windows 设置 → 时间和语言 → 语言」中安装中文语言包。
+
+### CLI 命令速查
+
+```bash
+SKILL_DIR=".claude/skills/desktop"
+OCR="python $SKILL_DIR/ocr_win.py"
+CTL="python $SKILL_DIR/ctl_win.py"
+
+# ===== 眼（感知） =====
+
+# 全屏 OCR（简洁输出）
+$OCR --screen
+
+# 全屏 OCR + JSON 包围盒
+$OCR --screen --bbox
+
+# 鼠标附近 OCR（触觉，默认 300x200）
+$OCR --cursor
+
+# 鼠标附近 OCR + JSON（带可点击坐标）
+$OCR --cursor --bbox
+
+# 鼠标附近 OCR（自定义区域）
+$OCR --cursor --size 200x100
+
+# 指定图片 OCR
+$OCR /path/to/image.png
+
+# ===== 手（操控） =====
+
+# 获取鼠标位置
+$CTL pos
+
+# 移动鼠标
+$CTL move 500,300
+
+# 点击
+$CTL click 500,300
+
+# 双击
+$CTL dclick 500,300
+
+# 右键
+$CTL rclick 500,300
+
+# 输入文字（走剪贴板，支持中文）
+$CTL type "Hello World"
+$CTL type "你好世界"
+
+# 按键
+$CTL key enter
+$CTL key tab
+$CTL key esc
+$CTL key delete
+
+# 快捷键
+$CTL hotkey ctrl+c
+$CTL hotkey ctrl+v
+$CTL hotkey ctrl+s
+$CTL hotkey ctrl+a
+$CTL hotkey alt+f4
+
+# ===== 感知（窗口/应用状态） =====
+
+# 列出所有可见窗口（JSON）
+$CTL windows
+
+# 激活指定窗口（支持模糊匹配）
+$CTL activate "微信"
+$CTL activate "Chrome"
+
+# 全屏截图（传 Claude 视觉兜底时用）
+$CTL screenshot /tmp/desktop-screenshot.png
+
+# 局部截图
+$CTL screenshot-region x,y,w,h /tmp/region.png
+```
+
+### 操作流程
+
+与 macOS 版完全相同，只需替换工具变量：
+
+```bash
+# 标准流程：点击按钮
+1. 全屏 OCR 找目标
+   $OCR --screen --bbox
+   → 找到 "保存" @ center:[550, 300]
+
+2. 移动鼠标 + 触觉确认
+   $CTL move 550,300
+   $OCR --cursor --size 200x100
+   → 确认 "保存" 在鼠标下方 ✓
+
+3. 点击
+   $CTL click 550,300
+
+4. 触觉验证结果
+   $OCR --cursor
+```
+
+### 注意事项
+
+- **Windows OCR 无置信度**：confidence 固定返回 1.0，忽略该字段
+- **中文输入用 type 命令**：走剪贴板粘贴，`$CTL type "你好"`，不要用 `key` 逐字输入
+- **窗口激活限制**：部分 UWP 应用 `SetForegroundWindow` 可能无效，可先手动点击一次
+- **多显示器**：截图使用 `all_screens=True`，OCR 坐标对应全虚拟桌面坐标
+
+### OCR 输出格式
+
+与 macOS 版完全相同：
+
+**简洁模式（默认）**
+```
+cursor: (516,703)  ocr: 180ms
+  [1.00] 保存  @ (550,300)
+  [1.00] 取消  @ (650,300)
+```
+
+**JSON 模式（--bbox）**
+```json
+{
+  "cursor": [516, 703],
+  "elapsed_ms": 180,
+  "items": [
+    {
+      "text": "保存",
+      "confidence": 1.0,
+      "bbox": [520, 285, 60, 30],
+      "center": [550, 300]
+    }
+  ]
+}
+```
+
+`center` 是文字中心坐标，可直接传给 `$CTL click` 点击。
+
+---
+
 ## 微信操控脚本
 
 本 skill 目录下有三个微信操控脚本，封装了完整的读/发/验证流程：
