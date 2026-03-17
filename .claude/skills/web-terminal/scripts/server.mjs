@@ -8,11 +8,14 @@ import http from 'http';
 import { WebSocketServer } from 'ws';
 import pty from 'node-pty';
 import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
 
 const PORT = parseInt(process.env.WEB_TERMINAL_PORT || '7681');
 const TOKEN = process.env.WEB_TERMINAL_TOKEN || crypto.randomBytes(12).toString('hex');
 const CWD = process.env.WEB_TERMINAL_CWD || process.cwd();
 const MAX_SCROLLBACK = 50 * 1024;
+const MAX_UPLOAD_SIZE = 50 * 1024 * 1024; // 50MB
 
 // Tab definitions
 const TABS = [
@@ -175,6 +178,13 @@ html,body{height:100%;background:#1a1a2e;overflow:hidden;font-family:-apple-syst
 .dot.on{background:#4ade80;box-shadow:0 0 6px rgba(74,222,128,0.5)}
 .status-text{font-size:11px;color:#666;transition:color 0.3s}
 .status-text.on{color:#4ade80}
+.yolo-btn{
+  font-size:11px;padding:2px 8px;border-radius:10px;cursor:pointer;
+  border:1px solid rgba(251,191,36,0.3);background:rgba(251,191,36,0.08);color:#888;
+  transition:all 0.2s;font-weight:700;letter-spacing:0.5px;
+}
+.yolo-btn:hover{border-color:rgba(251,191,36,0.5)}
+.yolo-btn.on{background:rgba(251,191,36,0.2);color:#fbbf24;border-color:#fbbf24;text-shadow:0 0 8px rgba(251,191,36,0.4)}
 
 /* Terminal area */
 #terminal-wrap{flex:1;min-height:0;position:relative;overflow:hidden}
@@ -185,6 +195,7 @@ html,body{height:100%;background:#1a1a2e;overflow:hidden;font-family:-apple-syst
 .xterm-viewport{overflow-y:auto!important}
 .xterm-viewport::-webkit-scrollbar{width:6px}
 .xterm-viewport::-webkit-scrollbar-thumb{background:rgba(233,69,96,0.3);border-radius:3px}
+.xterm-cursor-layer{opacity:0!important}
 
 /* Overlay */
 #overlay{
@@ -206,52 +217,94 @@ html,body{height:100%;background:#1a1a2e;overflow:hidden;font-family:-apple-syst
 #mobile-bar{display:none;flex-shrink:0}
 
 @media (max-width:768px),(pointer:coarse){
-  #header{height:40px;min-height:40px}
-  .tab{font-size:14px;padding:0 14px}
+  html,body{overscroll-behavior:none}
+  #app{padding-bottom:env(safe-area-inset-bottom,0)}
+  #header{height:44px;min-height:44px;padding-top:env(safe-area-inset-top,0)}
+  .tab{font-size:14px;padding:0 16px;min-width:44px;justify-content:center}
 
   #mobile-bar{
-    display:flex;flex-direction:column;
+    display:flex;flex-direction:column;gap:8px;
     background:#111833;border-top:1px solid rgba(233,69,96,0.12);
     flex-shrink:0;
+    padding:8px 12px;padding-bottom:calc(8px + env(safe-area-inset-bottom,0));
   }
-  .quick-keys{
-    display:flex;gap:6px;padding:6px 10px;
+  .mobile-row{
+    display:flex;align-items:center;gap:8px;
     overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;
   }
-  .quick-keys::-webkit-scrollbar{display:none}
+  .mobile-row::-webkit-scrollbar{display:none}
+  .mobile-row-secondary{justify-content:center;overflow:visible}
+  .mobile-row-arrows{justify-content:center;overflow:visible}
+  .arrow-pad{
+    display:grid;
+    grid-template-columns:repeat(3,minmax(38px,46px));
+    grid-template-rows:repeat(2,auto);
+    gap:8px;
+    justify-content:center;
+  }
+  .arrow-pad #btn-up{grid-column:2;grid-row:1}
+  .arrow-pad #btn-left{grid-column:1;grid-row:2}
+  .arrow-pad #btn-down{grid-column:2;grid-row:2}
+  .arrow-pad #btn-right{grid-column:3;grid-row:2}
   .qk{
-    padding:5px 14px;background:rgba(255,255,255,0.06);color:#aab;
-    border:1px solid rgba(255,255,255,0.08);border-radius:16px;
-    font-size:13px;white-space:nowrap;cursor:pointer;
+    padding:4px 7px;background:rgba(255,255,255,0.06);color:#aab;
+    border:1px solid rgba(255,255,255,0.08);border-radius:5px;
+    font-size:11px;white-space:nowrap;cursor:pointer;
     font-family:'SF Mono','Menlo','Consolas',monospace;flex-shrink:0;
-    transition:all 0.15s;-webkit-tap-highlight-color:transparent;
+    transition:all 0.12s;-webkit-tap-highlight-color:transparent;
+    min-height:26px;
+    display:flex;align-items:center;justify-content:center;
   }
   .qk:active{background:#e94560;color:#fff;border-color:#e94560;transform:scale(0.93)}
-  .qk-sep{width:1px;background:rgba(255,255,255,0.08);flex-shrink:0;margin:4px 2px}
-
-  .input-row{display:flex;gap:8px;align-items:flex-end;padding:8px 10px}
-  .input-row textarea{
-    flex:1;background:#1a1f3a;color:#e0e0e0;
-    border:1px solid rgba(255,255,255,0.1);border-radius:20px;
-    padding:10px 16px;font-size:16px;font-family:inherit;
-    resize:none;outline:none;min-height:40px;max-height:120px;
-    line-height:1.4;transition:border-color 0.2s;
-  }
-  .input-row textarea:focus{border-color:rgba(233,69,96,0.6)}
-  .input-row textarea::placeholder{color:#555}
-
-  .send-btn{
-    width:40px;height:40px;border:none;border-radius:50%;
-    background:#e94560;color:#fff;cursor:pointer;
-    flex-shrink:0;display:flex;align-items:center;justify-content:center;
-    transition:transform 0.15s;-webkit-tap-highlight-color:transparent;
-  }
-  .send-btn:active{transform:scale(0.9)}
-  .send-btn svg{width:18px;height:18px}
+  .qk-stop{background:rgba(251,191,36,0.12);color:#fbbf24;border-color:rgba(251,191,36,0.25);font-weight:700}
+  .qk-stop:active{background:#fbbf24;color:#000;border-color:#fbbf24}
+  .qk-paste{background:rgba(96,165,250,0.12);color:#60a5fa;border-color:rgba(96,165,250,0.25)}
+  .qk-paste:active{background:#60a5fa;color:#000;border-color:#60a5fa}
+  .qk-bottom{background:rgba(34,211,238,0.12);color:#22d3ee;border-color:rgba(34,211,238,0.25)}
+  .qk-bottom:active{background:#22d3ee;color:#000;border-color:#22d3ee}
+  .qk-arrow{background:rgba(168,85,247,0.12);color:#a855f7;border-color:rgba(168,85,247,0.25);min-width:36px;padding:6px 8px}
+  .qk-arrow:active{background:#a855f7;color:#fff;border-color:#a855f7}
+  .qk-nav{min-width:86px}
+  .qk-backspace{min-width:46px;padding:4px 10px;font-family:inherit}
+  .qk-backspace svg{width:18px;height:18px;display:block}
 }
+
+/* Upload button */
+.upload-btn{
+  font-size:14px;padding:2px 8px;border-radius:10px;cursor:pointer;
+  border:1px solid rgba(96,165,250,0.3);background:rgba(96,165,250,0.08);color:#888;
+  transition:all 0.2s;display:flex;align-items:center;
+}
+.upload-btn:hover{border-color:rgba(96,165,250,0.5);color:#60a5fa}
+
+/* Drag-over overlay */
+#terminal-wrap.drag-over::after{
+  content:'释放文件以上传';
+  position:absolute;inset:0;z-index:20;
+  display:flex;align-items:center;justify-content:center;
+  background:rgba(13,19,38,0.8);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);
+  border:2px dashed rgba(96,165,250,0.6);border-radius:8px;
+  color:#60a5fa;font-size:18px;font-weight:600;
+  pointer-events:none;
+}
+
+/* Toast */
+.toast{
+  position:fixed;bottom:80px;left:50%;transform:translateX(-50%);
+  padding:8px 20px;border-radius:20px;font-size:13px;
+  color:#fff;opacity:0;transition:opacity 0.3s;
+  pointer-events:none;z-index:100;white-space:nowrap;
+  max-width:90vw;overflow:hidden;text-overflow:ellipsis;
+}
+.toast.show{opacity:1}
+.toast.success{background:rgba(74,222,128,0.85)}
+.toast.error{background:rgba(239,68,68,0.85)}
+.toast.info{background:rgba(96,165,250,0.85)}
 </style></head>
 <body>
 <div id="app">
+  <input type="file" id="file-input" multiple style="display:none">
+  <div class="toast" id="toast"></div>
   <div id="header"></div>
   <div id="terminal-wrap">
     <div id="overlay">
@@ -260,12 +313,30 @@ html,body{height:100%;background:#1a1a2e;overflow:hidden;font-family:-apple-syst
     </div>
   </div>
   <div id="mobile-bar">
-    <div class="quick-keys" id="quick-keys"></div>
-    <div class="input-row">
-      <textarea id="mobile-input" rows="1" placeholder="输入命令..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
-      <button class="send-btn" id="send-btn">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+    <div class="mobile-row mobile-row-main">
+      <button class="qk" id="btn-enter">Enter</button>
+      <button class="qk qk-backspace" id="btn-backspace" aria-label="Backspace">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path fill="currentColor" d="M20 5H9L3 12l6 7h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2Zm-2.59 9L19 15.59 17.59 17 16 15.41 14.41 17 13 15.59 14.59 14 13 12.41 14.41 11 16 12.59 17.59 11 19 12.41 17.41 14Z"/>
+        </svg>
       </button>
+      <button class="qk qk-paste" id="btn-paste">Paste</button>
+      <button class="qk qk-stop" id="btn-ctrlc">Ctrl+C</button>
+      <button class="qk" id="btn-del">Del</button>
+      <button class="qk" id="btn-newline">换行</button>
+      <button class="qk qk-bottom" id="btn-bottom">底部</button>
+    </div>
+    <div class="mobile-row mobile-row-secondary">
+      <button class="qk qk-nav" id="btn-tab">Tab</button>
+      <button class="qk qk-nav" id="btn-shift-tab">Shift+Tab</button>
+    </div>
+    <div class="mobile-row mobile-row-arrows">
+      <div class="arrow-pad">
+        <button class="qk qk-arrow" id="btn-up">↑</button>
+        <button class="qk qk-arrow" id="btn-left">←</button>
+        <button class="qk qk-arrow" id="btn-down">↓</button>
+        <button class="qk qk-arrow" id="btn-right">→</button>
+      </div>
     </div>
   </div>
 </div>
@@ -295,7 +366,7 @@ TABS.forEach(function(t) {
 });
 var rightEl = document.createElement('div');
 rightEl.className = 'header-right';
-rightEl.innerHTML = '<span id="status-text" class="status-text">Connecting</span><span id="status-dot" class="dot"></span>';
+rightEl.innerHTML = '<button class="upload-btn" id="upload-btn" title="Upload files">\\u{1F4CE}</button><button class="yolo-btn" id="yolo-btn">YOLO</button><span id="status-text" class="status-text">Connecting</span><span id="status-dot" class="dot"></span>';
 headerEl.appendChild(rightEl);
 
 // ===== Build xterm instances =====
@@ -345,12 +416,24 @@ TABS.forEach(function(t) {
   terms[t.id] = term;
   fitAddons[t.id] = fit;
 
-  // Desktop keyboard input
-  if (!isMobile) {
-    term.onData(function(data) {
-      sendRaw(t.id, data);
+  // Keep desktop physical-keyboard behavior on xterm's native path.
+  // Only special-case Shift+Enter because we want it to send a literal newline.
+  (function(tabId, t) {
+    t.attachCustomKeyEventHandler(function(e) {
+      if (e.type !== 'keydown') return true;
+      if (e.key === 'Enter' && e.shiftKey) {
+        e.preventDefault();
+        sendRaw(tabId, '\\n');
+        return false;
+      }
+      return true;
     });
-  }
+  })(t.id, term);
+
+  // Keyboard input (both desktop and mobile)
+  term.onData(function(data) {
+    sendRaw(t.id, data);
+  });
 });
 
 // ===== Fit =====
@@ -433,6 +516,11 @@ function connect() {
       var msg = JSON.parse(e.data);
       if (msg.type === 'output' || msg.type === 'scrollback') {
         if (terms[msg.tab]) terms[msg.tab].write(msg.data);
+      } else if (msg.type === 'clear') {
+        if (terms[msg.tab]) terms[msg.tab].clear();
+      } else if (msg.type === 'yolo') {
+        var yoloBtn = document.getElementById('yolo-btn');
+        if (yoloBtn) yoloBtn.classList.toggle('on', msg.yolo);
       } else if (msg.type === 'exit') {
         if (terms[msg.tab]) {
           terms[msg.tab].write('\\r\\n\\x1b[31m[Session ended]\\x1b[0m\\r\\n');
@@ -467,82 +555,182 @@ function sendRaw(tabId, data) {
   }
 }
 
+function scrollActiveTabToBottom() {
+  var term = terms[activeTab];
+  if (term) term.scrollToBottom();
+}
+
 connect();
+
+// ===== YOLO button =====
+document.getElementById('yolo-btn').addEventListener('click', function() {
+  var btn = this;
+  var isOn = btn.classList.contains('on');
+  var newYolo = !isOn;
+  var yoloTab = (activeTab === 'codex') ? 'codex' : 'claude';
+  var yoloLabel = (yoloTab === 'codex') ? 'Codex' : 'Claude Code';
+  var yoloFlag = (yoloTab === 'codex') ? '--yolo' : '--dangerously-skip-permissions';
+  if (newYolo && !confirm('开启 YOLO 模式？\\n\\n' + yoloLabel + ' 将自动批准所有操作（' + yoloFlag + '）。\\n确认后会重启当前 ' + yoloLabel + ' 会话。')) return;
+  if (!newYolo && !confirm('关闭 YOLO 模式？\\n\\n确认后会重启当前 ' + yoloLabel + ' 会话。')) return;
+  var t = terms[yoloTab];
+  if (ws && ws.readyState === 1 && t) {
+    ws.send(JSON.stringify({ type: 'restart', tab: yoloTab, yolo: newYolo, cols: t.cols, rows: t.rows }));
+  }
+});
 
 // ===== Mobile =====
 if (isMobile) {
   var appEl = document.getElementById('app');
+
+  // --- Keyboard handling via visualViewport ---
   if (window.visualViewport) {
+    var lastVH = window.visualViewport.height;
     function adjustForKeyboard() {
-      appEl.style.height = window.visualViewport.height + 'px';
+      var vh = window.visualViewport.height;
+      appEl.style.height = vh + 'px';
+      // Scroll terminal to bottom when keyboard opens
+      if (vh < lastVH) {
+        setTimeout(scrollActiveTabToBottom, 50);
+      }
+      lastVH = vh;
       clearTimeout(resizeTimer);
-      resizeTimer = setTimeout(doFit, 100);
+      resizeTimer = setTimeout(doFit, 80);
     }
     window.visualViewport.addEventListener('resize', adjustForKeyboard);
     window.visualViewport.addEventListener('scroll', function() { window.scrollTo(0, 0); });
+    adjustForKeyboard();
   }
 
-  var input = document.getElementById('mobile-input');
-  var sendBtn = document.getElementById('send-btn');
-  var qkContainer = document.getElementById('quick-keys');
+  // --- Touch: scroll terminal + swipe to switch tabs ---
+  var touchStartX = 0, touchStartY = 0, lastTouchY = 0, touchDir = null;
+  var termWrap = document.getElementById('terminal-wrap');
+  var SCROLL_SPEED = 1.5; // lines per 20px of touch movement
 
-  var quickKeys = [
-    { label: 'Ctrl+C', code: 3 },
-    { label: 'Enter', code: 13 },
-    { label: 'Tab', code: 9 },
-    { label: 'Esc', code: 27 },
-    'sep',
-    { label: '\\u2191', seq: '[A' },
-    { label: '\\u2193', seq: '[B' },
-    'sep',
-    { label: 'y', ch: 'y' },
-    { label: 'n', ch: 'n' },
-    { label: 'Ctrl+Z', code: 26 },
-    { label: 'Ctrl+D', code: 4 },
-    { label: 'Ctrl+L', code: 12 },
-    { label: '/exit', str: '/exit\\r' },
-  ];
+  termWrap.addEventListener('touchstart', function(e) {
+    if (e.touches.length !== 1) return;
+    touchStartX = e.touches[0].clientX;
+    touchStartY = e.touches[0].clientY;
+    lastTouchY = touchStartY;
+    touchDir = null; // undecided
+  }, { passive: true });
 
-  quickKeys.forEach(function(k) {
-    if (k === 'sep') {
-      var sep = document.createElement('div');
-      sep.className = 'qk-sep';
-      qkContainer.appendChild(sep);
-      return;
+  termWrap.addEventListener('touchmove', function(e) {
+    if (e.touches.length !== 1) return;
+    var curY = e.touches[0].clientY;
+    var curX = e.touches[0].clientX;
+    var dy = curY - touchStartY;
+    var dx = curX - touchStartX;
+
+    // Decide direction on first significant move
+    if (!touchDir) {
+      if (Math.abs(dy) > 8 || Math.abs(dx) > 8) {
+        touchDir = Math.abs(dy) > Math.abs(dx) ? 'v' : 'h';
+      } else return;
     }
-    var btn = document.createElement('button');
-    btn.className = 'qk';
-    btn.textContent = k.label;
-    btn.addEventListener('click', function(e) {
+
+    if (touchDir === 'v') {
+      // Vertical: scroll terminal
+      var delta = lastTouchY - curY;
+      var lines = Math.round(delta / 20 * SCROLL_SPEED);
+      if (lines !== 0) {
+        terms[activeTab].scrollLines(lines);
+        lastTouchY = curY;
+      }
       e.preventDefault();
-      var data;
-      if (k.code !== undefined) data = String.fromCharCode(k.code);
-      else if (k.seq) data = String.fromCharCode(27) + k.seq;
-      else if (k.ch) data = k.ch;
-      else if (k.str) data = k.str;
-      if (data) sendRaw(activeTab, data);
-    }, { passive: false });
-    qkContainer.appendChild(btn);
+    }
+  }, { passive: false });
+
+  termWrap.addEventListener('touchend', function(e) {
+    if (touchDir !== 'h') return;
+    var dx = e.changedTouches[0].clientX - touchStartX;
+    if (Math.abs(dx) < 60) return;
+    var idx = TABS.findIndex(function(t) { return t.id === activeTab; });
+    if (dx < 0 && idx < TABS.length - 1) switchTab(TABS[idx + 1].id);
+    else if (dx > 0 && idx > 0) switchTab(TABS[idx - 1].id);
+  }, { passive: true });
+
+  // --- Ctrl+C button ---
+  document.getElementById('btn-ctrlc').addEventListener('touchstart', function(e) {
+    e.preventDefault();
+    sendRaw(activeTab, String.fromCharCode(3));
+  }, { passive: false });
+
+  // --- Enter button ---
+  document.getElementById('btn-enter').addEventListener('touchstart', function(e) {
+    e.preventDefault();
+    sendRaw(activeTab, String.fromCharCode(13));
+  }, { passive: false });
+
+  // --- Backspace button ---
+  document.getElementById('btn-backspace').addEventListener('touchstart', function(e) {
+    e.preventDefault();
+    sendRaw(activeTab, '\x7f');
+  }, { passive: false });
+
+  // --- Shift+Enter button: send newline ---
+  document.getElementById('btn-newline').addEventListener('touchstart', function(e) {
+    e.preventDefault();
+    sendRaw(activeTab, '\\n');
+  }, { passive: false });
+
+  // --- Scroll-to-bottom button ---
+  document.getElementById('btn-bottom').addEventListener('touchstart', function(e) {
+    e.preventDefault();
+    scrollActiveTabToBottom();
+  }, { passive: false });
+
+  // --- Tab button ---
+  document.getElementById('btn-tab').addEventListener('touchstart', function(e) {
+    e.preventDefault();
+    sendRaw(activeTab, String.fromCharCode(9));
+  }, { passive: false });
+
+  // --- Shift+Tab button ---
+  document.getElementById('btn-shift-tab').addEventListener('touchstart', function(e) {
+    e.preventDefault();
+    sendRaw(activeTab, '\x1b[Z');
+  }, { passive: false });
+
+  // --- Delete button ---
+  document.getElementById('btn-del').addEventListener('touchstart', function(e) {
+    e.preventDefault();
+    sendRaw(activeTab, '\x1b[3~');
+  }, { passive: false });
+
+  // --- Paste button: read clipboard and send to terminal ---
+  document.getElementById('btn-paste').addEventListener('click', function(e) {
+    e.preventDefault();
+    if (navigator.clipboard && navigator.clipboard.readText) {
+      navigator.clipboard.readText().then(function(text) {
+        if (text) sendRaw(activeTab, text);
+      }).catch(function() {});
+    }
   });
 
-  function sendInput() {
-    var text = input.value;
-    if (!text) return;
-    sendRaw(activeTab, text + String.fromCharCode(13));
-    input.value = '';
-    autoResizeInput();
-  }
+  // --- Arrow buttons ---
+  document.getElementById('btn-up').addEventListener('touchstart', function(e) {
+    e.preventDefault();
+    sendRaw(activeTab, '\x1b[A');
+  }, { passive: false });
+  document.getElementById('btn-down').addEventListener('touchstart', function(e) {
+    e.preventDefault();
+    sendRaw(activeTab, '\x1b[B');
+  }, { passive: false });
+  document.getElementById('btn-right').addEventListener('touchstart', function(e) {
+    e.preventDefault();
+    sendRaw(activeTab, '\x1b[C');
+  }, { passive: false });
+  document.getElementById('btn-left').addEventListener('touchstart', function(e) {
+    e.preventDefault();
+    sendRaw(activeTab, '\x1b[D');
+  }, { passive: false });
 
-  sendBtn.addEventListener('click', function(e) { e.preventDefault(); sendInput(); });
-  input.addEventListener('keydown', function(e) {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendInput(); }
+  // --- Tap terminal to focus xterm (show keyboard) ---
+  termWrap.addEventListener('touchend', function(e) {
+    if (touchDir === 'v' || touchDir === 'h') return; // was scrolling/swiping
+    if (e.target.closest('#mobile-bar') || e.target.closest('#overlay')) return;
+    terms[activeTab].focus();
   });
-
-  function autoResizeInput() {
-    input.style.height = 'auto';
-    input.style.height = Math.min(input.scrollHeight, 120) + 'px';
-  }
-  input.addEventListener('input', autoResizeInput);
 }
 
 // Desktop focus
@@ -554,6 +742,116 @@ if (!isMobile) {
     }
   });
 }
+
+// ===== File Upload =====
+var toastEl = document.getElementById('toast');
+var toastTimer = null;
+function showToast(msg, type, duration) {
+  clearTimeout(toastTimer);
+  toastEl.textContent = msg;
+  toastEl.className = 'toast show ' + (type || 'info');
+  toastTimer = setTimeout(function() { toastEl.className = 'toast'; }, duration || 3000);
+}
+
+var MAX_UPLOAD_MB = 50;
+function uploadFile(file) {
+  if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
+    var sizeMB = (file.size / 1024 / 1024).toFixed(1);
+    return Promise.reject(new Error(file.name + ' 太大（' + sizeMB + 'MB），最大 ' + MAX_UPLOAD_MB + 'MB'));
+  }
+  return new Promise(function(resolve, reject) {
+    var xhr = new XMLHttpRequest();
+    var encodedName = encodeURIComponent(file.name);
+    xhr.open('POST', '/upload?name=' + encodedName);
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    xhr.upload.onprogress = function(e) {
+      if (e.lengthComputable) {
+        var pct = Math.round(e.loaded / e.total * 100);
+        showToast(file.name + ' ' + pct + '%', 'info', 30000);
+      }
+    };
+    xhr.onload = function() {
+      if (xhr.status === 200) {
+        try { resolve(JSON.parse(xhr.responseText)); } catch(e) { resolve({}); }
+      } else {
+        reject(new Error(xhr.responseText || 'Upload failed'));
+      }
+    };
+    xhr.onerror = function() { reject(new Error('Network error')); };
+    xhr.send(file);
+  });
+}
+
+function uploadFiles(files) {
+  var list = Array.from(files);
+  if (!list.length) return;
+  var idx = 0;
+  var snippets = [];
+
+  function normalizeAbsolutePath(filePath) {
+    return String(filePath || '').replace(/\\\\/g, '/');
+  }
+
+  function buildFileSnippet(filePath) {
+    return '[file](' + normalizeAbsolutePath(filePath) + ')';
+  }
+
+  function next() {
+    if (idx >= list.length) {
+      showToast(list.length > 1 ? list.length + ' files uploaded and inserted' : list[0].name + ' uploaded and inserted', 'success');
+      if (snippets.length) {
+        var text = snippets.join(' ') + ' ';
+        sendRaw(activeTab, text);
+      }
+      return;
+    }
+    var f = list[idx];
+    var label = list.length > 1 ? '(' + (idx + 1) + '/' + list.length + ') ' : '';
+    showToast(label + 'Uploading ' + f.name + '...', 'info', 30000);
+    uploadFile(f).then(function(result) {
+      var uploadedPath = result && (result.absolutePath || result.path);
+      if (uploadedPath) snippets.push(buildFileSnippet(uploadedPath));
+      idx++;
+      next();
+    }).catch(function(err) {
+      showToast('Failed: ' + f.name + ' - ' + err.message, 'error', 5000);
+    });
+  }
+  next();
+}
+
+// Upload button click
+var fileInput = document.getElementById('file-input');
+document.getElementById('upload-btn').addEventListener('click', function() {
+  fileInput.click();
+});
+fileInput.addEventListener('change', function() {
+  if (fileInput.files.length) uploadFiles(fileInput.files);
+  fileInput.value = '';
+});
+
+// Drag and drop
+var dragCounter = 0;
+var termWrapEl = document.getElementById('terminal-wrap');
+termWrapEl.addEventListener('dragenter', function(e) {
+  e.preventDefault();
+  dragCounter++;
+  termWrapEl.classList.add('drag-over');
+});
+termWrapEl.addEventListener('dragleave', function(e) {
+  e.preventDefault();
+  dragCounter--;
+  if (dragCounter <= 0) { dragCounter = 0; termWrapEl.classList.remove('drag-over'); }
+});
+termWrapEl.addEventListener('dragover', function(e) {
+  e.preventDefault();
+});
+termWrapEl.addEventListener('drop', function(e) {
+  e.preventDefault();
+  dragCounter = 0;
+  termWrapEl.classList.remove('drag-over');
+  if (e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files);
+});
 </script>
 </body></html>`;
 
@@ -619,6 +917,57 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // File upload
+  if (url.pathname === '/upload' && req.method === 'POST') {
+    if (!isAuthed(req)) { res.writeHead(401); res.end('Unauthorized'); return; }
+    const name = url.searchParams.get('name');
+    if (!name) { res.writeHead(400); res.end('Missing name parameter'); return; }
+    const UPLOAD_DIR = path.join(CWD, '.claude', 'uploads');
+    const dir = url.searchParams.get('dir') || '';
+    // Path safety: reject .. and absolute paths
+    if (name.includes('..') || dir.includes('..')) { res.writeHead(400); res.end('Invalid path: contains ..'); return; }
+    if (path.isAbsolute(name) || path.isAbsolute(dir)) { res.writeHead(400); res.end('Invalid path: absolute paths not allowed'); return; }
+    const targetDir = path.resolve(UPLOAD_DIR, dir);
+    const targetPath = path.resolve(targetDir, name);
+    // Ensure resolved path is within UPLOAD_DIR
+    if (!targetPath.startsWith(path.resolve(UPLOAD_DIR) + path.sep) && targetPath !== path.resolve(UPLOAD_DIR)) {
+      res.writeHead(400); res.end('Invalid path: outside upload directory'); return;
+    }
+    // Content-Length pre-check
+    const contentLength = parseInt(req.headers['content-length'] || '0');
+    if (contentLength > MAX_UPLOAD_SIZE) { res.writeHead(413); res.end('File too large (max 100MB)'); return; }
+    // Create directory if needed
+    fs.mkdirSync(targetDir, { recursive: true });
+    const ws = fs.createWriteStream(targetPath);
+    let received = 0;
+    let aborted = false;
+    req.on('data', (chunk) => {
+      received += chunk.length;
+      if (received > MAX_UPLOAD_SIZE && !aborted) {
+        aborted = true;
+        req.destroy();
+        ws.destroy();
+        try { fs.unlinkSync(targetPath); } catch {}
+        res.writeHead(413);
+        res.end('File too large (max 100MB)');
+      }
+    });
+    req.pipe(ws);
+    ws.on('finish', () => {
+      if (aborted) return;
+      const relPath = path.relative(CWD, targetPath).split(path.sep).join('/');
+      const absolutePath = targetPath.split(path.sep).join('/');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, path: relPath, absolutePath, size: received }));
+    });
+    ws.on('error', (err) => {
+      if (aborted) return;
+      res.writeHead(500);
+      res.end('Write error: ' + err.message);
+    });
+    return;
+  }
+
   // Legacy compat
   const match = url.pathname.match(/^\/t\/([^/]+)$/);
   if (match && match[1] === TOKEN) {
@@ -661,6 +1010,37 @@ wss.on('connection', (ws, req) => {
         ws.send(JSON.stringify({ type: 'status', tab: tabId, status: state.status }));
       }
 
+      if (msg.type === 'restart') {
+        const tabId = msg.tab;
+        const tab = TABS.find(t => t.id === tabId);
+        const state = tabState[tabId];
+        if (!tab || !state) return;
+        // Kill existing pty
+        if (state.pty) {
+          state.pty.kill();
+          state.pty = null;
+        }
+        state.scrollback = '';
+        state.status = 'idle';
+        // Update args based on yolo flag
+        if (msg.yolo !== undefined) {
+          if (tab.cmd === 'claude') {
+            const baseArgs = (tab.args || []).filter(a => a !== '--dangerously-skip-permissions');
+            tab.args = msg.yolo ? [...baseArgs, '--dangerously-skip-permissions'] : baseArgs;
+          } else if (tab.cmd === 'codex') {
+            const baseArgs = (tab.args || []).filter(a => a !== '--yolo');
+            tab.args = msg.yolo ? [...baseArgs, '--yolo'] : baseArgs;
+          }
+        }
+        // Clear terminal on all clients
+        broadcast({ type: 'clear', tab: tabId });
+        // Respawn
+        spawnTab(tabId, msg.cols, msg.rows);
+        // Send yolo state back
+        const isYolo = (tab.args || []).includes('--dangerously-skip-permissions') || (tab.args || []).includes('--yolo');
+        broadcast({ type: 'yolo', tab: tabId, yolo: isYolo });
+      }
+
       if (msg.type === 'input') {
         const state = tabState[msg.tab];
         if (state && state.pty) state.pty.write(msg.data);
@@ -692,3 +1072,4 @@ process.on('SIGINT', () => {
   }
   process.exit(0);
 });
+

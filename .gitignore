@@ -114,6 +114,9 @@ update-cmd-gitbash.ps1
 .claude/skills/collect/.fxb-token
 1-Inbox/_collect/
 
+# Web Terminal 上传文件
+.claude/uploads/
+
 # 其他
 ieee.png
 ieee_results.html
