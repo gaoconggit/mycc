@@ -19,6 +19,7 @@ import { WebChannel } from "./channels/web.js";
 import { loadConfig } from "./config.js";
 import { SessionStats } from "./session-stats.js";
 import { FeishuCommands } from "./channels/feishu-commands.js";
+import { resolveAgentDir, listAgents } from "./agent-resolver.js";
 
 const PORT = process.env.PORT || 18080;
 
@@ -39,6 +40,7 @@ export class HttpServer {
   private server: http.Server | https.Server;
   private state: PairState;
   private cwd: string;
+  private agentsDir: string | null;
   private onPaired?: (token: string) => void;
   private isTls: boolean;
   private channelManager: ChannelManager;
@@ -71,8 +73,9 @@ export class HttpServer {
   /** tunnel 状态获取函数 */
   private getTunnelStatusFn: (() => string) | null = null;
 
-  constructor(pairCode: string, cwd: string, authToken?: string, tls?: TlsConfig) {
+  constructor(pairCode: string, cwd: string, authToken?: string, tls?: TlsConfig, agentsDir?: string) {
     this.cwd = cwd;
+    this.agentsDir = agentsDir || process.env.AGENTS_DIR || null;
     // 如果传入了 authToken，说明之前已配对过
     this.state = {
       pairCode,
@@ -167,6 +170,8 @@ export class HttpServer {
         await this.handleRename(req, res);
       } else if (url.pathname === "/skills/list" && req.method === "GET") {
         await this.handleSkillsList(req, res, url);
+      } else if (url.pathname === "/agents/list" && req.method === "GET") {
+        this.handleAgentsList(req, res);
       } else if (url.pathname === "/events" && req.method === "GET") {
         this.handleEvents(req, res);
       } else if (url.pathname === "/status" && req.method === "GET") {
@@ -281,12 +286,32 @@ export class HttpServer {
       res.end(JSON.stringify({ error: "Invalid JSON" }));
       return;
     }
-    const { message, sessionId, images, model } = parsed as {
+    const { message, sessionId, images, model, agentId } = parsed as {
       message: string;
       sessionId?: string;
       images?: ImageData[];
       model?: string;
+      agentId?: string;
     };
+
+    // agentId 路由：解析为 Agent 目录
+    let effectiveCwd = this.cwd;
+    let settingSources: string[] | undefined;
+    if (agentId) {
+      if (!this.agentsDir) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Agent 路由未配置" }));
+        return;
+      }
+      const agentDir = resolveAgentDir(agentId, this.agentsDir);
+      if (!agentDir) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: `Agent '${agentId}' 不存在` }));
+        return;
+      }
+      effectiveCwd = agentDir;
+      settingSources = ["project"];
+    }
 
     // 校验图片
     const imageValidation = validateImages(images);
@@ -329,7 +354,7 @@ export class HttpServer {
 
     try {
       // 使用 adapter 的 chat 方法（返回 AsyncIterable）
-      for await (const data of adapter.chat({ message: chatMessage, sessionId, cwd: this.cwd, images, model: model || undefined })) {
+      for await (const data of adapter.chat({ message: chatMessage, sessionId, cwd: effectiveCwd, images, model: model || undefined, settingSources })) {
         if (data && typeof data === "object" && "type" in data) {
           // 提取 session_id
           if (data.type === "system" && "session_id" in data) {
@@ -534,6 +559,21 @@ export class HttpServer {
 
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ items, total, page, pageSize, hasMore }));
+  }
+
+  private handleAgentsList(req: http.IncomingMessage, res: http.ServerResponse) {
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.replace("Bearer ", "");
+
+    if (!this.state.paired || token !== this.state.token) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "未授权" }));
+      return;
+    }
+
+    const agents = this.agentsDir ? listAgents(this.agentsDir) : [];
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ agents }));
   }
 
   /**

@@ -921,6 +921,24 @@ export class FeishuChannel implements MessageChannel {
   }
 
   /**
+   * 创建飞书流式卡片会话
+   * 用于 AI 回复实时更新到单个卡片，替代逐条发送消息
+   */
+  createStreamingSession(): FeishuStreamingSession {
+    return new FeishuStreamingSession(
+      { appId: this.config.appId, appSecret: this.config.appSecret },
+      (msg) => console.log(msg)
+    );
+  }
+
+  /**
+   * 暴露配置（供流式会话使用）
+   */
+  getConfig(): FeishuChannelConfig {
+    return this.config;
+  }
+
+  /**
    * 解析 Markdown 表格为飞书交互卡片表格格式
    * @returns 包含 beforeTable、afterTable 和表格数据的对象，如果没有表格则返回 null
    */
