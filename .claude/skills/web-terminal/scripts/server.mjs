@@ -518,6 +518,7 @@ html,body{height:100%;background:#1a1a2e;overflow:hidden;font-family:-apple-syst
   border-bottom:1px solid rgba(233,69,96,0.45);
   pointer-events:none;
 }
+.term-panel.claude-ime-hidden .composition-view{display:none!important}
 .xterm.cc-ime-composing .composition-view{display:none!important}
 
 /* Overlay */
@@ -1468,6 +1469,9 @@ function mountTab(tab) {
 
   var panel = document.createElement('div');
   panel.className = 'term-panel' + (t.id === activeTab ? ' active' : '');
+  if (t.id === 'claude' || t.templateId === 'claude' || t.cmd === 'claude') {
+    panel.classList.add('claude-ime-hidden');
+  }
   panel.id = 'panel-' + t.id;
   wrapEl.insertBefore(panel, document.getElementById('overlay'));
   panels[t.id] = panel;
