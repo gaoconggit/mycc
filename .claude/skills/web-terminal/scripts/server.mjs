@@ -621,6 +621,9 @@ html,body{height:100%;background:#1a1a2e;overflow:hidden;font-family:-apple-syst
   }
   .qk-paste{background:rgba(96,165,250,0.12);color:#60a5fa;border-color:rgba(96,165,250,0.25)}
   .qk-paste:active{background:#60a5fa;color:#000;border-color:#60a5fa}
+  .qk-copy{background:rgba(74,222,128,0.12);color:#4ade80;border-color:rgba(74,222,128,0.25)}
+  .qk-copy:active{background:#4ade80;color:#000;border-color:#4ade80}
+  .qk-copy.copied{background:#4ade80;color:#000;border-color:#4ade80}
   .qk-upload{
     gap:5px;padding:4px 10px;
     background:rgba(96,165,250,0.12);color:#60a5fa;border-color:rgba(96,165,250,0.25);
@@ -736,6 +739,7 @@ html[data-display-mode="standalone"] #scroll-bottom-btn{
     <div class="mobile-row mobile-row-main">
       <button class="qk" id="btn-enter">Enter</button>
       <button class="qk qk-nav" id="btn-tab">Tab</button>
+      <button class="qk qk-copy" id="btn-copy">Copy</button>
       <button class="qk qk-paste" id="btn-paste">Paste</button>
       <button class="qk qk-backspace" id="btn-backspace" aria-label="Backspace">
         <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -1567,7 +1571,45 @@ function mountTab(tab) {
         sendRaw(tabId, '\\n');
         return false;
       }
+      // Ctrl+C: copy if selection exists, otherwise send interrupt
+      if (e.ctrlKey && e.key === 'c') {
+        if (t.hasSelection()) {
+          navigator.clipboard.writeText(t.getSelection()).catch(function(){});
+          t.clearSelection();
+          return false; // prevent sending to terminal
+        }
+        // no selection — let xterm send ^C to terminal
+        return true;
+      }
+      // Ctrl+V: paste from clipboard
+      if (e.ctrlKey && e.key === 'v') {
+        e.preventDefault();
+        if (navigator.clipboard && navigator.clipboard.readText) {
+          navigator.clipboard.readText().then(function(text) {
+            if (text) sendRaw(tabId, text);
+          }).catch(function(){});
+        }
+        return false;
+      }
       return true;
+    });
+
+    // Right-click to paste
+    t.element.addEventListener('contextmenu', function(e) {
+      e.preventDefault();
+      if (navigator.clipboard && navigator.clipboard.readText) {
+        navigator.clipboard.readText().then(function(text) {
+          if (text) sendRaw(tabId, text);
+        }).catch(function(){});
+      }
+    });
+
+    // Select-to-copy (Linux-style): auto copy on selection
+    t.onSelectionChange(function() {
+      var text = t.getSelection();
+      if (text) {
+        navigator.clipboard.writeText(text).catch(function(){});
+      }
     });
   })(t.id, term);
 
@@ -1933,6 +1975,36 @@ if (isMobile) {
     e.preventDefault();
     sendMobileShortcut('\x1b[3~');
   }, { passive: false });
+
+  // --- Copy button: copy terminal selection or visible screen ---
+  document.getElementById('btn-copy').addEventListener('click', function(e) {
+    e.preventDefault();
+    var term = terms[activeTab];
+    if (!term) return;
+    var text = term.hasSelection() ? term.getSelection() : '';
+    if (!text) {
+      // No selection: copy all visible lines from the terminal buffer
+      var buf = term.buffer.active;
+      var lines = [];
+      for (var i = buf.viewportY; i < buf.viewportY + term.rows; i++) {
+        var line = buf.getLine(i);
+        if (line) lines.push(line.translateToString(true));
+      }
+      text = lines.join('\\n');
+    }
+    if (text && navigator.clipboard) {
+      var btn = document.getElementById('btn-copy');
+      navigator.clipboard.writeText(text).then(function() {
+        btn.classList.add('copied');
+        btn.textContent = 'Copied!';
+        setTimeout(function() {
+          btn.classList.remove('copied');
+          btn.textContent = 'Copy';
+        }, 1200);
+      }).catch(function(){});
+    }
+    requestActiveTermFocus();
+  });
 
   // --- Paste button: read clipboard and send to terminal ---
   document.getElementById('btn-paste').addEventListener('click', function(e) {
