@@ -621,9 +621,6 @@ html,body{height:100%;background:#1a1a2e;overflow:hidden;font-family:-apple-syst
   }
   .qk-paste{background:rgba(96,165,250,0.12);color:#60a5fa;border-color:rgba(96,165,250,0.25)}
   .qk-paste:active{background:#60a5fa;color:#000;border-color:#60a5fa}
-  .qk-copy{background:rgba(74,222,128,0.12);color:#4ade80;border-color:rgba(74,222,128,0.25)}
-  .qk-copy:active{background:#4ade80;color:#000;border-color:#4ade80}
-  .qk-copy.copied{background:#4ade80;color:#000;border-color:#4ade80}
   .qk-upload{
     gap:5px;padding:4px 10px;
     background:rgba(96,165,250,0.12);color:#60a5fa;border-color:rgba(96,165,250,0.25);
@@ -718,6 +715,39 @@ html[data-display-mode="standalone"] #scroll-bottom-btn{
 .toast.success{background:rgba(74,222,128,0.85)}
 .toast.error{background:rgba(239,68,68,0.85)}
 .toast.info{background:rgba(96,165,250,0.85)}
+
+/* Reader mode overlay */
+#reader-overlay{
+  display:none;position:fixed;inset:0;z-index:50;
+  background:#111833;
+  flex-direction:column;
+}
+#reader-overlay.show{display:flex}
+#reader-header{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:10px 16px;padding-top:calc(10px + env(safe-area-inset-top,0));
+  background:#0d1326;border-bottom:1px solid rgba(233,69,96,0.15);
+  flex-shrink:0;
+}
+#reader-header .reader-title{color:#e0e0e0;font-size:14px;font-weight:600}
+#reader-close-btn{
+  padding:6px 16px;border:none;border-radius:16px;
+  background:#e94560;color:#fff;font-size:13px;font-weight:600;
+  cursor:pointer;
+}
+#reader-close-btn:active{opacity:0.7}
+#reader-content{
+  flex:1;overflow:auto;-webkit-overflow-scrolling:touch;
+  padding:12px 14px;padding-bottom:calc(12px + env(safe-area-inset-bottom,0));
+}
+#reader-content pre{
+  margin:0;white-space:pre-wrap;word-break:break-all;
+  font-family:'Cascadia Code','Fira Code','JetBrains Mono','Menlo','Consolas',monospace;
+  font-size:12px;line-height:1.5;color:#d4d4d8;
+  -webkit-user-select:text;user-select:text;
+}
+.qk-reader{background:rgba(168,85,247,0.12);color:#c084fc;border-color:rgba(168,85,247,0.25)}
+.qk-reader:active{background:#c084fc;color:#000;border-color:#c084fc}
 </style></head>
 <body>
 <div id="app">
@@ -739,7 +769,6 @@ html[data-display-mode="standalone"] #scroll-bottom-btn{
     <div class="mobile-row mobile-row-main">
       <button class="qk" id="btn-enter">Enter</button>
       <button class="qk qk-nav" id="btn-tab">Tab</button>
-      <button class="qk qk-copy" id="btn-copy">Copy</button>
       <button class="qk qk-paste" id="btn-paste">Paste</button>
       <button class="qk qk-backspace" id="btn-backspace" aria-label="Backspace">
         <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -758,6 +787,7 @@ html[data-display-mode="standalone"] #scroll-bottom-btn{
       <button class="qk" id="btn-newline">换行</button>
       <button class="qk" id="btn-del">Del</button>
       <button class="qk qk-nav" id="btn-shift-tab">Shift+Tab</button>
+      <button class="qk qk-reader" id="btn-reader">阅读</button>
     </div>
     <div class="mobile-row mobile-row-arrows">
       <div class="arrow-pad">
@@ -771,6 +801,13 @@ html[data-display-mode="standalone"] #scroll-bottom-btn{
       <button class="qk qk-nav" id="btn-esc">Esc</button>
       <button class="qk qk-stop" id="btn-ctrlc">Ctrl+C</button>
     </div>
+  </div>
+  <div id="reader-overlay">
+    <div id="reader-header">
+      <span class="reader-title">阅读模式</span>
+      <button id="reader-close-btn" type="button">关闭</button>
+    </div>
+    <div id="reader-content"><pre id="reader-text"></pre></div>
   </div>
   <div id="status-indicator">
     <span id="status-text" class="status-text">Connecting</span>
@@ -803,13 +840,14 @@ var isIOS = /iPad|iPhone|iPod/i.test(navigator.userAgent)
 var headerEl = document.getElementById('header');
 var rightEl = document.createElement('div');
 rightEl.className = 'header-right';
-rightEl.innerHTML = '<div class="tab-actions"><button class="tab-action-btn plus" id="add-tab-btn" type="button" title="复制当前标签页" aria-label="复制当前标签页">+</button><button class="tab-action-btn caret" id="add-tab-menu-btn" type="button" title="从模板新建标签页" aria-label="从模板新建标签页">▾</button><div class="tab-template-menu" id="tab-template-menu"></div></div>';
+rightEl.innerHTML = '<button class="tab-action-btn" id="refresh-page-btn" type="button" title="刷新页面" aria-label="刷新页面"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button><div class="tab-actions"><button class="tab-action-btn plus" id="add-tab-btn" type="button" title="复制当前标签页" aria-label="复制当前标签页">+</button><button class="tab-action-btn caret" id="add-tab-menu-btn" type="button" title="从模板新建标签页" aria-label="从模板新建标签页">▾</button><div class="tab-template-menu" id="tab-template-menu"></div></div>';
 headerEl.appendChild(rightEl);
 // ===== Build xterm instances =====
 var appEl = document.getElementById('app');
 var wrapEl = document.getElementById('terminal-wrap');
 var mobileBarEl = document.getElementById('mobile-bar');
 var scrollBottomBtnEl = document.getElementById('scroll-bottom-btn');
+var refreshPageBtnEl = document.getElementById('refresh-page-btn');
 var addTabBtnEl = document.getElementById('add-tab-btn');
 var addTabMenuBtnEl = document.getElementById('add-tab-menu-btn');
 var tabTemplateMenuEl = document.getElementById('tab-template-menu');
@@ -1021,6 +1059,10 @@ function renderTabTemplateMenu() {
 }
 
 renderTabTemplateMenu();
+
+bindPress(refreshPageBtnEl, function() {
+  location.reload();
+});
 
 bindPress(addTabBtnEl, function() {
   var source = findTab(activeTab) || TABS[0] || TAB_TEMPLATES[0];
@@ -1976,35 +2018,41 @@ if (isMobile) {
     sendMobileShortcut('\x1b[3~');
   }, { passive: false });
 
-  // --- Copy button: copy terminal selection or visible screen ---
-  document.getElementById('btn-copy').addEventListener('click', function(e) {
-    e.preventDefault();
+  // --- Reader mode: show terminal content as selectable text ---
+  var readerOverlay = document.getElementById('reader-overlay');
+  var readerText = document.getElementById('reader-text');
+  var readerContent = document.getElementById('reader-content');
+
+  function openReaderMode() {
     var term = terms[activeTab];
     if (!term) return;
-    var text = term.hasSelection() ? term.getSelection() : '';
-    if (!text) {
-      // No selection: copy all visible lines from the terminal buffer
-      var buf = term.buffer.active;
-      var lines = [];
-      for (var i = buf.viewportY; i < buf.viewportY + term.rows; i++) {
-        var line = buf.getLine(i);
-        if (line) lines.push(line.translateToString(true));
-      }
-      text = lines.join('\\n');
+    var buf = term.buffer.active;
+    var lines = [];
+    for (var i = 0; i <= buf.length - 1; i++) {
+      var line = buf.getLine(i);
+      if (line) lines.push(line.translateToString(true));
     }
-    if (text && navigator.clipboard) {
-      var btn = document.getElementById('btn-copy');
-      navigator.clipboard.writeText(text).then(function() {
-        btn.classList.add('copied');
-        btn.textContent = 'Copied!';
-        setTimeout(function() {
-          btn.classList.remove('copied');
-          btn.textContent = 'Copy';
-        }, 1200);
-      }).catch(function(){});
-    }
+    // trim trailing empty lines
+    while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+    readerText.textContent = lines.join('\\n');
+    readerOverlay.classList.add('show');
+    // scroll to bottom
+    readerContent.scrollTop = readerContent.scrollHeight;
+  }
+
+  function closeReaderMode() {
+    readerOverlay.classList.remove('show');
     requestActiveTermFocus();
-  });
+  }
+
+  document.getElementById('btn-reader').addEventListener('touchstart', function(e) {
+    e.preventDefault();
+    openReaderMode();
+  }, { passive: false });
+  document.getElementById('reader-close-btn').addEventListener('touchstart', function(e) {
+    e.preventDefault();
+    closeReaderMode();
+  }, { passive: false });
 
   // --- Paste button: read clipboard and send to terminal ---
   document.getElementById('btn-paste').addEventListener('click', function(e) {
