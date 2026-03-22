@@ -721,17 +721,20 @@ export class WeixinChannel implements MessageChannel {
         console.warn(`[WeixinChannel] 媒体文件不存在: ${media}`);
         return;
       }
-      try {
-        await apiUploadMedia({
-          baseUrl,
-          token,
-          toUser: to,
-          contextToken,
-          filePath: media,
-        });
-        console.log(`[WeixinChannel] 媒体文件已发送: ${path.basename(media)}`);
-      } catch (err) {
-        console.error(`[WeixinChannel] 媒体发送失败:`, err);
+      const uploadParams = { baseUrl, token, toUser: to, contextToken, filePath: media };
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          await apiUploadMedia(uploadParams);
+          console.log(`[WeixinChannel] 媒体文件已发送: ${path.basename(media)}`);
+          break;
+        } catch (err) {
+          if (attempt < 2) {
+            console.warn(`[WeixinChannel] 媒体发送失败(${attempt + 1}/3)，${2 * (attempt + 1)}秒后重试:`, String(err));
+            await sleep(2000 * (attempt + 1));
+          } else {
+            console.error(`[WeixinChannel] 媒体发送失败(3/3):`, err);
+          }
+        }
       }
     }
   }
