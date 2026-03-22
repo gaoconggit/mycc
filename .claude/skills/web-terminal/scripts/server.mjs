@@ -748,6 +748,9 @@ html[data-display-mode="standalone"] #scroll-bottom-btn{
 }
 .qk-reader{background:rgba(168,85,247,0.12);color:#c084fc;border-color:rgba(168,85,247,0.25)}
 .qk-reader:active{background:#c084fc;color:#000;border-color:#c084fc}
+.qk-zoom{background:rgba(251,146,60,0.12);color:#fb923c;border-color:rgba(251,146,60,0.25);min-width:42px;font-variant-numeric:tabular-nums}
+.qk-zoom:active{background:#fb923c;color:#000;border-color:#fb923c}
+#terminal-wrap.zoomed{overflow:auto;-webkit-overflow-scrolling:touch}
 </style></head>
 <body>
 <div id="app">
@@ -788,6 +791,7 @@ html[data-display-mode="standalone"] #scroll-bottom-btn{
       <button class="qk" id="btn-del">Del</button>
       <button class="qk qk-nav" id="btn-shift-tab">Shift+Tab</button>
       <button class="qk qk-reader" id="btn-reader">阅读</button>
+      <button class="qk qk-zoom" id="btn-zoom">1x</button>
     </div>
     <div class="mobile-row mobile-row-arrows">
       <div class="arrow-pad">
@@ -857,6 +861,8 @@ var panels = {};
 var activatedTabs = Object.create(null);
 var lastTouchActionAt = 0;
 var lastRenameActionAt = 0;
+var zoomSteps = [1, 0.75, 0.6];
+var zoomLevel = 1;
 
 document.body.appendChild(tabTemplateMenuEl);
 
@@ -1517,6 +1523,12 @@ function mountTab(tab) {
   panel.id = 'panel-' + t.id;
   wrapEl.insertBefore(panel, document.getElementById('overlay'));
   panels[t.id] = panel;
+  if (zoomLevel !== 1) {
+    panel.style.transform = 'scale(' + zoomLevel + ')';
+    panel.style.transformOrigin = 'top left';
+    panel.style.width = (100 / zoomLevel) + '%';
+    panel.style.height = (100 / zoomLevel) + '%';
+  }
   var isCompactCodexMobile = isMobile && (t.templateId === 'codex' || t.cmd === 'codex');
 
   var term = new window.Terminal({
@@ -1666,6 +1678,36 @@ TABS.slice().forEach(function(tab) {
   mountTab(tab);
 });
 
+// ===== Zoom (mobile) =====
+function applyZoom(level) {
+  zoomLevel = level;
+  var zoomBtn = document.getElementById('btn-zoom');
+  if (zoomBtn) zoomBtn.textContent = level === 1 ? '1x' : level + 'x';
+  wrapEl.classList.toggle('zoomed', level !== 1);
+  Object.keys(panels).forEach(function(id) {
+    var panel = panels[id];
+    if (level === 1) {
+      panel.style.transform = '';
+      panel.style.transformOrigin = '';
+      panel.style.width = '';
+      panel.style.height = '';
+    } else {
+      panel.style.transform = 'scale(' + level + ')';
+      panel.style.transformOrigin = 'top left';
+      panel.style.width = (100 / level) + '%';
+      panel.style.height = (100 / level) + '%';
+    }
+  });
+  try { localStorage.setItem('wt-zoom', String(level)); } catch(e) {}
+}
+
+function cycleZoom() {
+  var idx = zoomSteps.indexOf(zoomLevel);
+  var next = zoomSteps[(idx + 1) % zoomSteps.length];
+  applyZoom(next);
+  doFit();
+}
+
 // ===== Fit =====
 function doFit() {
   try {
@@ -1764,6 +1806,10 @@ function connect() {
     setStatus(true);
     overlayEl.classList.remove('show');
     reconnectAttempts = 0;
+    try {
+      var saved = parseFloat(localStorage.getItem('wt-zoom'));
+      if (saved && zoomSteps.indexOf(saved) !== -1 && saved !== zoomLevel) applyZoom(saved);
+    } catch(e) {}
     doFit();
     scheduleScrollBottomButtonUpdate();
     var t = terms[activeTab];
@@ -1815,7 +1861,13 @@ function connect() {
         }
         scheduleScrollBottomButtonUpdate();
       } else if (msg.type === 'output') {
-        if (terms[msg.tab]) terms[msg.tab].write(msg.data);
+        if (terms[msg.tab]) {
+          var t = terms[msg.tab];
+          var wasNearBottom = !t.buffer.active || (t.buffer.active.baseY - t.buffer.active.viewportY) <= 2;
+          t.write(msg.data, function() {
+            if (wasNearBottom) t.scrollToBottom();
+          });
+        }
         scheduleScrollBottomButtonUpdate();
       } else if (msg.type === 'clear') {
         if (terms[msg.tab]) terms[msg.tab].clear();
@@ -2049,6 +2101,7 @@ if (isMobile) {
     e.preventDefault();
     openReaderMode();
   }, { passive: false });
+  bindPress(document.getElementById('btn-zoom'), cycleZoom);
   document.getElementById('reader-close-btn').addEventListener('touchstart', function(e) {
     e.preventDefault();
     closeReaderMode();
