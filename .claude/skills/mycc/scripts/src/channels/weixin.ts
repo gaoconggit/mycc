@@ -264,26 +264,49 @@ async function apiSendMessage(params: {
     ? [{ type: MessageItemType.TEXT, text_item: { text: params.text } }]
     : [];
 
-  await apiFetch({
-    baseUrl: params.baseUrl,
-    endpoint: "ilink/bot/sendmessage",
-    body: JSON.stringify({
-      msg: {
-        from_user_id: "",
-        to_user_id: params.to,
-        client_id: clientId,
-        message_type: MessageType.BOT,
-        message_state: MessageState.FINISH,
-        item_list: items.length ? items : undefined,
-        context_token: params.contextToken,
-      },
-      base_info: buildBaseInfo(),
-    }),
-    token: params.token,
-    timeoutMs: API_TIMEOUT_MS,
-    label: "sendMessage",
+  const body = JSON.stringify({
+    msg: {
+      to_user_id: params.to,
+      client_id: clientId,
+      context_token: params.contextToken,
+      item_list: items.length ? items : undefined,
+    },
+    base_info: buildBaseInfo(),
   });
-  return clientId;
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const resp = await apiFetch({
+        baseUrl: params.baseUrl,
+        endpoint: "ilink/bot/sendmessage",
+        body,
+        token: params.token,
+        timeoutMs: API_TIMEOUT_MS,
+        label: "sendMessage",
+      });
+      try {
+        const parsed = JSON.parse(resp);
+        if (parsed.ret !== undefined && parsed.ret !== 0) {
+          throw new Error(`sendMessage 失败: ret=${parsed.ret} resp=${resp}`);
+        }
+      } catch (err) {
+        if (err instanceof SyntaxError) {
+          console.warn(`[WeixinChannel] sendMessage 响应非 JSON:`, resp);
+        } else {
+          throw err;
+        }
+      }
+      return clientId;
+    } catch (err) {
+      if (attempt < 2) {
+        console.warn(`[WeixinChannel] sendMessage 失败(${attempt + 1}/3)，${attempt + 1}秒后重试:`, String(err));
+        await sleep(1000 * (attempt + 1));
+      } else {
+        throw err;
+      }
+    }
+  }
+  return clientId; // unreachable but satisfies TS
 }
 
 async function apiGetConfig(params: {
@@ -617,9 +640,10 @@ export class WeixinChannel implements MessageChannel {
   private config: WeixinChannelConfig;
   private account: WeixinAccountData | null = null;
   private abortController: AbortController | null = null;
-  private messageCallback: ((message: string) => void) | null = null;
+  private messageCallback: ((message: string, fromUserId: string) => void) | null = null;
   private contextTokenStore = new Map<string, string>();
   private typingTicketCache = new Map<string, TypingCacheEntry>();
+  private typingTimers = new Map<string, ReturnType<typeof setInterval>>();
   private getUpdatesBuf = "";
   private sessionPausedUntil = 0;
   private lastFromUserId: string | null = null;
@@ -640,7 +664,7 @@ export class WeixinChannel implements MessageChannel {
 
   // ── 消息回调 ──
 
-  onMessage(callback: (message: string) => void): void {
+  onMessage(callback: (message: string, fromUserId: string) => void): void {
     this.messageCallback = callback;
   }
 
@@ -781,7 +805,7 @@ export class WeixinChannel implements MessageChannel {
     return cached?.ticket ?? "";
   }
 
-  private async startTyping(userId: string): Promise<void> {
+  private async sendTypingOnce(userId: string): Promise<void> {
     const ticket = await this.getTypingTicket(userId);
     if (!ticket || !this.account?.token) return;
     try {
@@ -797,7 +821,18 @@ export class WeixinChannel implements MessageChannel {
     }
   }
 
+  private startTyping(userId: string): void {
+    this.clearTypingTimer(userId);
+    // 立即发一次，然后每 3 秒刷新保持 typing 状态
+    this.sendTypingOnce(userId).catch(() => {});
+    const timer = setInterval(() => {
+      this.sendTypingOnce(userId).catch(() => {});
+    }, 3_000);
+    this.typingTimers.set(userId, timer);
+  }
+
   private async stopTyping(userId: string): Promise<void> {
+    this.clearTypingTimer(userId);
     const ticket = this.typingTicketCache.get(userId)?.ticket;
     if (!ticket || !this.account?.token) return;
     try {
@@ -810,6 +845,14 @@ export class WeixinChannel implements MessageChannel {
       });
     } catch {
       // 非关键操作，忽略错误
+    }
+  }
+
+  private clearTypingTimer(userId: string): void {
+    const existing = this.typingTimers.get(userId);
+    if (existing) {
+      clearInterval(existing);
+      this.typingTimers.delete(userId);
     }
   }
 
@@ -835,37 +878,41 @@ export class WeixinChannel implements MessageChannel {
     const baseUrl = this.account.baseUrl || DEFAULT_BASE_URL;
     const token = this.account.token;
 
-    if (text) {
-      const plainText = stripMarkdown(text);
-      await apiSendMessage({
-        baseUrl,
-        token,
-        to,
-        text: plainText,
-        contextToken,
-      });
-    }
-
-    if (media) {
-      if (!fs.existsSync(media)) {
-        console.warn(`[WeixinChannel] 媒体文件不存在: ${media}`);
-        return;
+    try {
+      if (text) {
+        const plainText = stripMarkdown(text);
+        await apiSendMessage({
+          baseUrl,
+          token,
+          to,
+          text: plainText,
+          contextToken,
+        });
       }
-      const uploadParams = { baseUrl, token, toUser: to, contextToken, filePath: media };
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          await apiUploadMedia(uploadParams);
-          console.log(`[WeixinChannel] 媒体文件已发送: ${path.basename(media)}`);
-          break;
-        } catch (err) {
-          if (attempt < 2) {
-            console.warn(`[WeixinChannel] 媒体发送失败(${attempt + 1}/3)，${2 * (attempt + 1)}秒后重试:`, String(err));
-            await sleep(2000 * (attempt + 1));
-          } else {
-            console.error(`[WeixinChannel] 媒体发送失败(3/3):`, err);
+
+      if (media) {
+        if (!fs.existsSync(media)) {
+          console.warn(`[WeixinChannel] 媒体文件不存在: ${media}`);
+          return;
+        }
+        const uploadParams = { baseUrl, token, toUser: to, contextToken, filePath: media };
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            await apiUploadMedia(uploadParams);
+            console.log(`[WeixinChannel] 媒体文件已发送: ${path.basename(media)}`);
+            break;
+          } catch (err) {
+            if (attempt < 2) {
+              console.warn(`[WeixinChannel] 媒体发送失败(${attempt + 1}/3)，${2 * (attempt + 1)}秒后重试:`, String(err));
+              await sleep(2000 * (attempt + 1));
+            } else {
+              console.error(`[WeixinChannel] 媒体发送失败(3/3):`, err);
+            }
           }
         }
       }
+    } finally {
+      this.stopTyping(to).catch(() => {});
     }
   }
 
@@ -1072,11 +1119,11 @@ export class WeixinChannel implements MessageChannel {
 
     this.lastFromUserId = fromUserId;
 
-    // 发送 typing 指示器
-    this.startTyping(fromUserId).catch(() => {});
+    // 启动 typing 指示器（持续刷新，直到 sendReply 完成）
+    this.startTyping(fromUserId);
 
     if (this.messageCallback) {
-      this.messageCallback(fullText);
+      this.messageCallback(fullText, fromUserId);
     }
   }
 

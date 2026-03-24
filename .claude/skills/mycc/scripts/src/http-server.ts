@@ -892,15 +892,31 @@ export class HttpServer {
             this.weixinChannel = new WeixinChannel({ stateDir });
 
             if (this.weixinChannel.isLoggedIn()) {
-              this.weixinChannel.onMessage(async (message: string) => {
+              // 微信用户 → CC sessionId 映射，实现上下文记忆
+              const weixinSessionMap = new Map<string, string>();
+
+              this.weixinChannel.onMessage(async (message: string, fromUserId: string) => {
                 // 微信消息路由到 CC
-                console.log(`[WeixinChannel] 转发消息到 CC: ${message.substring(0, 50)}...`);
+                console.log(`[WeixinChannel] 转发消息到 CC (user=${fromUserId.substring(0, 12)}...): ${message.substring(0, 50)}...`);
+                const sessionId = weixinSessionMap.get(fromUserId);
+                const chunks: string[] = [];
+                let resolvedSessionId = sessionId;
+
+                // adapter.chat 失败才清 session
                 try {
-                  const chunks: string[] = [];
-                  for await (const data of adapter.chat({ message, cwd: this.cwd })) {
+                  for await (const data of adapter.chat({ message, sessionId, cwd: this.cwd })) {
+                    // 提取新会话的 sessionId
+                    if (!resolvedSessionId && data && typeof data === "object" && "type" in data) {
+                      const d = data as any;
+                      if (d.type === "system" && d.session_id) {
+                        resolvedSessionId = d.session_id;
+                        weixinSessionMap.set(fromUserId, resolvedSessionId!);
+                        console.log(`[WeixinChannel] 新会话 sessionId=${resolvedSessionId} (user=${fromUserId.substring(0, 12)}...)`);
+                      }
+                    }
                     // 收集 assistant 回复文本
                     if (data && typeof data === "object" && "type" in data) {
-                      if (data.type === "assistant" && "message" in data) {
+                      if ((data as any).type === "assistant" && "message" in (data as any)) {
                         const msg = (data as any).message;
                         if (msg?.content && Array.isArray(msg.content)) {
                           for (const block of msg.content) {
@@ -912,14 +928,19 @@ export class HttpServer {
                       }
                     }
                   }
-                  // 发送完整回复
+                } catch (err) {
+                  console.error("[WeixinChannel] CC 会话失败，清除 session:", err);
+                  weixinSessionMap.delete(fromUserId);
+                }
+
+                // 发送回复（失败不影响 session 映射）
+                try {
                   if (chunks.length > 0 && this.weixinChannel) {
                     const fullReply = chunks.join("");
-                    // 获取最近一个发消息的用户（从 channel 内部获取）
                     await (this.weixinChannel as any).sendLastReply(fullReply);
                   }
                 } catch (err) {
-                  console.error("[WeixinChannel] 处理消息失败:", err);
+                  console.error("[WeixinChannel] 发送回复失败:", err);
                 }
               });
 
