@@ -128,6 +128,25 @@ update-cmd-gitbash.ps1
 .agents/skills/mycc/scripts/dist/
 .agents/skills/mycc/scripts/node_modules/
 
+# ====================================
+# skills/ 镜像目录 - 运行时和敏感文件
+# ====================================
+skills/mycc/current.json
+skills/mycc/weixin/
+skills/mycc/start_backend_temp.bat
+skills/mycc/start_hidden_temp.vbs
+skills/mycc/scripts/node_modules/
+skills/mycc/scripts/dist/
+skills/mycc/scripts/*.log
+skills/web-terminal/runtime-tabs.json
+skills/scheduler/history.md
+skills/collect/.fxb-token
+
+# ====================================
+# 运行时锁文件
+# ====================================
+.claude/scheduled_tasks.lock
+
 # 其他
 ieee.png
 ieee_results.html
