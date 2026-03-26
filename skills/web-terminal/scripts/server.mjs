@@ -587,7 +587,7 @@ html,body{height:100%;background:#1a1a2e;overflow:hidden;font-family:-apple-syst
 
 @media (max-width:768px),(pointer:coarse){
   html,body{overscroll-behavior:none}
-  #app{padding-bottom:0}
+  #app{padding-bottom:0;padding-left:env(safe-area-inset-left,0);padding-right:env(safe-area-inset-right,0)}
   #header{height:calc(44px + env(safe-area-inset-top,0));min-height:calc(44px + env(safe-area-inset-top,0));padding-top:env(safe-area-inset-top,0)}
   .tab{font-size:14px;padding:0 16px;min-width:44px;justify-content:center}
   .tab.closable{max-width:180px;padding-right:8px}
@@ -708,9 +708,17 @@ html[data-display-mode="standalone"] #mobile-bar{
 html[data-display-mode="standalone"] #scroll-bottom-btn{
   bottom:8px;
 }
+@media (orientation:landscape){
+  html[data-display-mode="standalone"] #mobile-bar{
+    padding-bottom:env(safe-area-inset-bottom,0);
+  }
+}
 @media (display-mode: standalone) and (max-width:768px), (display-mode: standalone) and (pointer:coarse){
   #mobile-bar{padding-bottom:0}
   #scroll-bottom-btn{bottom:8px}
+}
+@media (orientation:landscape) and (display-mode: standalone) and (max-width:768px), (orientation:landscape) and (display-mode: standalone) and (pointer:coarse){
+  #mobile-bar{padding-bottom:env(safe-area-inset-bottom,0)}
 }
 
 /* Upload button */
@@ -1099,7 +1107,8 @@ function renderTabTemplateMenu() {
 renderTabTemplateMenu();
 
 bindPress(refreshPageBtnEl, function() {
-  location.reload();
+  if (zoomLevel !== 1) applyZoom(1);
+  scheduleTabRedraw(activeTab);
 });
 
 bindPress(addTabBtnEl, function() {
