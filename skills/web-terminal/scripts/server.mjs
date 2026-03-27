@@ -620,7 +620,8 @@ html,body{height:100%;background:#1a1a2e;overflow:hidden;font-family:-apple-syst
   }
   .mobile-row::-webkit-scrollbar{display:none}
   .mobile-row-secondary{justify-content:center;overflow:visible}
-  .mobile-row-arrows{justify-content:center;overflow:visible}
+  .mobile-row-arrows{justify-content:center;overflow:visible;position:relative}
+  .arrows-right{margin-left:auto;display:flex;align-items:center}
   .mobile-row-ctrlc{justify-content:center;overflow:visible;position:relative}
   .arrow-pad{
     display:grid;
@@ -810,11 +811,13 @@ html[data-display-mode="standalone"] #scroll-bottom-btn{
     <div class="mobile-row mobile-row-main">
       <button class="qk" id="btn-enter">Enter</button>
       <button class="qk qk-nav" id="btn-tab">Tab</button>
-      <button class="qk qk-paste" id="btn-paste">Paste</button>
-      <button class="qk qk-backspace" id="btn-backspace" aria-label="Backspace">
+      <button class="qk qk-upload" id="btn-paste-img" type="button" title="粘贴图片" aria-label="粘贴图片">
         <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-          <path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M19 12H5m0 0l5-5m-5 5l5 5"/>
+          <path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" points="17 8 12 3 7 8"/>
+          <line stroke="currentColor" stroke-width="1.8" stroke-linecap="round" x1="12" y1="3" x2="12" y2="15"/>
         </svg>
+        <span>Alt+V</span>
       </button>
       <button class="qk qk-upload upload-trigger" id="btn-upload" type="button" title="上传附件" aria-label="上传附件">
         <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -824,19 +827,27 @@ html[data-display-mode="standalone"] #scroll-bottom-btn{
       </button>
     </div>
     <div class="mobile-row mobile-row-secondary">
-      <button class="qk qk-space" id="btn-space">Space</button>
-      <button class="qk" id="btn-newline">换行</button>
+      <button class="qk qk-paste" id="btn-paste">Paste</button>
+      <button class="qk" id="btn-newline">Shift+Enter</button>
       <button class="qk" id="btn-del">Del</button>
       <button class="qk qk-nav" id="btn-shift-tab">Shift+Tab</button>
       <button class="qk qk-reader" id="btn-reader">阅读</button>
       <button class="qk qk-zoom" id="btn-zoom">1x</button>
     </div>
     <div class="mobile-row mobile-row-arrows">
+      <button class="qk qk-space" id="btn-space">Space</button>
       <div class="arrow-pad">
         <button class="qk qk-arrow" id="btn-up">↑</button>
         <button class="qk qk-arrow" id="btn-left">←</button>
         <button class="qk qk-arrow" id="btn-down">↓</button>
         <button class="qk qk-arrow" id="btn-right">→</button>
+      </div>
+      <div class="arrows-right">
+        <button class="qk qk-backspace" id="btn-backspace" aria-label="Backspace">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M19 12H5m0 0l5-5m-5 5l5 5"/>
+          </svg>
+        </button>
       </div>
     </div>
     <div class="mobile-row mobile-row-ctrlc">
@@ -1177,6 +1188,14 @@ function shouldStickTermToBottom(term) {
 function syncTermStickToBottom(term) {
   if (!term) return;
   term.__ccStickToBottom = isTermNearBottom(term);
+}
+
+// Replace \x1b[2J (erase whole screen — pushes current viewport as blank lines into scrollback)
+// with \x1b[H\x1b[0J (cursor-home + erase-to-end): same visual result, no scrollback pollution.
+// This must be done BEFORE writing to xterm so the replacement runs in-order within the same
+// write chunk, not deferred like a CSI-handler approach would be.
+function filterTermData(data) {
+  return data.replace(/\\x1b\\[2J/g, '\\x1b[H\\x1b[0J');
 }
 
 function scrollTermToBottom(term) {
@@ -1735,6 +1754,12 @@ function mountTab(tab) {
         }
         return false;
       }
+      // Alt+V: paste image from clipboard
+      if (e.altKey && e.key === 'v') {
+        e.preventDefault();
+        pasteImageFromClipboard(tabId);
+        return false;
+      }
       return true;
     });
 
@@ -2017,7 +2042,7 @@ function connect() {
           var followScrollback = shouldStickTermToBottom(scrollbackTerm);
           activatedTabs[msg.tab] = true;
           if (typeof scrollbackTerm.reset === 'function') scrollbackTerm.reset();
-          scrollbackTerm.write(msg.data, function() {
+          scrollbackTerm.write(filterTermData(msg.data), function() {
             if (activeTab === msg.tab) {
               scheduleTabRedraw(msg.tab);
             } else if (followScrollback) {
@@ -2033,7 +2058,7 @@ function connect() {
         if (terms[msg.tab]) {
           var t = terms[msg.tab];
           var shouldFollowOutput = shouldStickTermToBottom(t) || isTermNearBottom(t);
-          t.write(msg.data, function() {
+          t.write(filterTermData(msg.data), function() {
             if (shouldFollowOutput) scrollTermToBottom(t);
             else scheduleScrollBottomButtonUpdate();
           });
@@ -2386,19 +2411,58 @@ function uploadFile(file) {
   return uploadBlob(file, file && file.name);
 }
 
+function normalizeAbsolutePath(filePath) {
+  return String(filePath || '').replace(/\\\\/g, '/');
+}
+
+function buildFileSnippet(filePath) {
+  return '[file](' + normalizeAbsolutePath(filePath) + ')';
+}
+
+function pasteImageFromClipboard(tabId) {
+  if (!navigator.clipboard || !navigator.clipboard.read) {
+    showToast('Clipboard API not available', 'error');
+    return;
+  }
+  navigator.clipboard.read().then(function(items) {
+    for (var i = 0; i < items.length; i++) {
+      var types = items[i].types;
+      for (var j = 0; j < types.length; j++) {
+        if (types[j].indexOf('image/') === 0) {
+          var mimeType = types[j];
+          var ext = mimeType.split('/')[1] || 'png';
+          if (ext === 'jpeg') ext = 'jpg';
+          var fileName = 'clipboard-' + Date.now() + '.' + ext;
+          items[i].getType(mimeType).then(function(blob) {
+            showToast('Uploading image...', 'info', 30000);
+            uploadBlob({ blob: blob, name: fileName, size: blob.size }, fileName).then(function(result) {
+              var uploadedPath = result && (result.absolutePath || result.path);
+              if (uploadedPath) {
+                sendRaw(tabId, buildFileSnippet(uploadedPath) + ' ');
+                showToast(fileName + ' uploaded and inserted', 'success');
+              }
+              requestActiveTermFocus();
+            }).catch(function(err) {
+              showToast('Upload failed: ' + err.message, 'error', 5000);
+            });
+          }).catch(function(err) {
+            showToast('Failed to read image: ' + err.message, 'error', 5000);
+          });
+          return;
+        }
+      }
+    }
+    showToast('No image in clipboard', 'info');
+  }).catch(function(err) {
+    showToast('Cannot read clipboard: ' + err.message, 'error', 5000);
+  });
+}
+
 function uploadFiles(files) {
   var list = Array.from(files);
   if (!list.length) return;
   var idx = 0;
   var snippets = [];
-
-  function normalizeAbsolutePath(filePath) {
-    return String(filePath || '').replace(/\\\\/g, '/');
-  }
-
-  function buildFileSnippet(filePath) {
-    return '[file](' + normalizeAbsolutePath(filePath) + ')';
-  }
 
   function next() {
     if (idx >= list.length) {
@@ -2432,6 +2496,9 @@ function openUploadPicker() {
 }
 Array.from(document.querySelectorAll('.upload-trigger')).forEach(function(btn) {
   btn.addEventListener('click', openUploadPicker);
+});
+document.getElementById('btn-paste-img').addEventListener('click', function() {
+  pasteImageFromClipboard(activeTab);
 });
 fileInput.addEventListener('change', function() {
   if (fileInput.files.length) uploadFiles(fileInput.files);
