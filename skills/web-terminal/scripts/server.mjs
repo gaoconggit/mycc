@@ -474,7 +474,7 @@ html,body{height:100%;background:#1a1a2e;overflow:hidden;font-family:-apple-syst
 }
 .tab{
   padding:0 16px;height:100%;display:flex;align-items:center;
-  font-size:13px;color:#666;cursor:pointer;white-space:nowrap;
+  font-size:13px;color:#8a92b2;cursor:pointer;white-space:nowrap;
   border-bottom:2px solid transparent;transition:all 0.2s;flex-shrink:0;
 }
 .tab-label{display:block;overflow:hidden;text-overflow:ellipsis}
@@ -998,6 +998,14 @@ function requestCreateTab(payload) {
 function requestDeleteTab(tabId) {
   if (!ws || ws.readyState !== 1) {
     showToast('连接未就绪，暂时不能删除标签页', 'error', 2500);
+    return;
+  }
+  var tab = findTab(tabId);
+  if (!tab) {
+    showToast('标签页不存在', 'error', 2000);
+    return;
+  }
+  if (!window.confirm('确认关闭「' + tab.label + '」吗？\\n关闭后会结束这个标签页里的终端进程。')) {
     return;
   }
   ws.send(JSON.stringify({ type: 'delete_tab', tab: tabId }));

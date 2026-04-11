@@ -35,6 +35,9 @@ curl -s -X POST http://localhost:18080/weixin/send-media \
   -d "{\"filePath\":\"C:/tmp/wx-screenshot.png\"}"
 ```
 
+> **`send-media` 支持任意文件类型**（图片、txt、exe 等），不限于图片。
+> 路径必须用正斜杠（`C:/Users/...`），反斜杠会导致 JSON.parse 报错。
+
 ## 结果处理
 
 - 返回 `{"ok":true}`：告知用户截图已发送到微信

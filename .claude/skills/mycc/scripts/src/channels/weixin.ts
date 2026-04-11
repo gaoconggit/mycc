@@ -880,12 +880,11 @@ export class WeixinChannel implements MessageChannel {
 
     try {
       if (text) {
-        const plainText = stripMarkdown(text);
         await apiSendMessage({
           baseUrl,
           token,
           to,
-          text: plainText,
+          text,
           contextToken,
         });
       }
@@ -933,8 +932,7 @@ export class WeixinChannel implements MessageChannel {
     const token = this.account.token;
 
     if (text) {
-      const plainText = stripMarkdown(text);
-      await apiSendMessage({ baseUrl, token, to, text: plainText, contextToken });
+      await apiSendMessage({ baseUrl, token, to, text, contextToken });
     }
 
     if (media) {

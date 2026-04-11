@@ -278,6 +278,21 @@ ${skillLine}
 4. 卡片底部 note 填写时间戳：${timestamp}
 5. 任务定义位置：.claude/skills/scheduler/tasks.md`;
 
+    // wx-notify 快速路径：直接发送，不经过 cc，避免 AI 改写格式
+    if (task.skill === "/wx-notify") {
+      const sendScript = join(cwd, ".claude/skills/wx-notify/send.mjs");
+      recordHistory(taskCwd, task.name, "执行中...");
+      try {
+        execSync(`node "${sendScript}" "${task.desc.replace(/"/g, '\\"')}"`, { cwd: taskCwd });
+        console.log(chalk.green(`[Scheduler] 任务完成: ${task.name}`));
+        recordHistory(taskCwd, task.name, "✅ 成功");
+      } catch (error) {
+        console.error(chalk.red(`[Scheduler] wx-notify 失败: ${task.name}`), error);
+        recordHistory(taskCwd, task.name, "❌ 失败");
+      }
+      return;
+    }
+
     // 记录开始执行
     recordHistory(taskCwd, task.name, "执行中...");
 

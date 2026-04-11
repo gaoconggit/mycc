@@ -9,7 +9,7 @@ import {
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { CCAdapter, SSEEvent, SessionParams } from "./interface.js";
-import type { ChatParams, ConversationSummary, ConversationHistory } from "../types.js";
+import type { ChatParams, ConversationSummary, ConversationHistory, CanUseToolFn } from "../types.js";
 import { getConversationList, getConversation } from "../history.js";
 import { detectClaudeCliPath } from "../platform.js";
 import { buildMessageContent, type MessageContent } from "../image-utils.js";
@@ -46,8 +46,11 @@ const CLEANUP_INTERVAL_MS = 2 * 60 * 1000;
 
 /**
  * 构造 v2 SDKSessionOptions
+ *
+ * @param model - 模型名称
+ * @param canUseTool - 工具权限回调。传入时走交互式权限确认，不传则 bypassPermissions
  */
-function buildSessionOptions(model?: string) {
+function buildSessionOptions(model?: string, canUseTool?: CanUseToolFn) {
   // 清除 CLAUDECODE 环境变量，避免子进程被误判为嵌套会话 (#16)
   const cleanEnv = { ...process.env };
   delete cleanEnv.CLAUDECODE;
@@ -58,8 +61,13 @@ function buildSessionOptions(model?: string) {
   const options: Parameters<typeof unstable_v2_createSession>[0] = {
     model: model || DEFAULT_MODEL,
     pathToClaudeCodeExecutable: CLAUDE_CLI_PATH,
-    permissionMode: "bypassPermissions",
+    // 有 canUseTool 回调 → 交互式权限确认（SDK 拦截 CLI 的权限请求，转发给回调）
+    // 无回调 → bypassPermissions（Web/定时任务等自动化场景）
+    // 始终 bypassPermissions 保证 CLI 正常启动
+    // canUseTool 回调由 SDK 在 bypassPermissions 之前拦截（SDK 层面处理，不依赖 CLI 发 control_request）
+    permissionMode: "bypassPermissions" as const,
     ...(!isRoot && { allowDangerouslySkipPermissions: true }),
+    ...(canUseTool && { canUseTool: canUseTool as any }),
     env: {
       ...cleanEnv,
       CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "1",
@@ -115,7 +123,7 @@ export class OfficialAdapter implements CCAdapter {
    * 由 chat() 在 stream 中拿到 sessionId 后调 registerSession 存入池
    */
   getOrCreateSession(params: SessionParams): SDKSession {
-    const { sessionId, model, cwd } = params;
+    const { sessionId, model, cwd, canUseTool } = params;
 
     // 池中有 → 复用
     if (sessionId && this.sessions.has(sessionId)) {
@@ -123,7 +131,7 @@ export class OfficialAdapter implements CCAdapter {
       return this.sessions.get(sessionId)!;
     }
 
-    const options = buildSessionOptions(model);
+    const options = buildSessionOptions(model, canUseTool);
 
     // v2 SDKSessionOptions 没有 cwd 字段，子进程通过 process.cwd() 继承工作目录
     // 必须在创建 session（spawn 子进程）前 chdir 到正确目录，否则 skills 等功能失效
@@ -231,10 +239,10 @@ export class OfficialAdapter implements CCAdapter {
    * 5. 总安全阀（30 分钟）→ 强制退出
    */
   async *chat(params: ChatParams): AsyncIterable<SSEEvent> {
-    const { message, sessionId, images, model, cwd } = params;
+    const { message, sessionId, images, model, cwd, canUseTool } = params;
 
     // 获取或创建 session
-    const session = this.getOrCreateSession({ sessionId, model, cwd });
+    const session = this.getOrCreateSession({ sessionId, model, cwd, canUseTool });
     const isNewSession = !sessionId;
 
     // 构造消息内容（纯文本或图文混合）

@@ -163,18 +163,36 @@ aster 可以单独调整某个源的分析标准，不影响其他源。
 2. ...
 ```
 
-### Step 6：飞书通知
+### Step 6：通知（飞书 + 微信并行）
 
-将 briefing.md 完整内容推送到飞书（`--file` 模式读取文件）：
+**发飞书**（完整简报）：
 
 ```bash
-node "$PROJECT_ROOT/.claude/skills/tell-me/send.js" \
+CONTENT=$(cat "$SAVE_DIR/briefing.md") && node "$PROJECT_ROOT/.claude/skills/tell-me/send.js" \
   "每日简报 | {YYYY-MM-DD}" \
-  --file "$SAVE_DIR/briefing.md" \
+  "$CONTENT" \
   blue
 ```
 
-推送成功后打个标记，方便追溯"这天推过飞书了"：
+**发微信**（30 秒速读摘要，适合手机阅读）：
+
+用 node 读取 briefing.md 完整内容发送（避免 Windows shell 中文编码问题）：
+
+```bash
+node -e "
+const fs = require('fs');
+const content = fs.readFileSync('$SAVE_DIR/briefing.md', 'utf8');
+fetch('http://localhost:18080/weixin/send', {
+  method: 'POST',
+  headers: {'Content-Type': 'application/json; charset=utf-8'},
+  body: JSON.stringify({text: content})
+}).then(r => r.json()).then(r => console.log(JSON.stringify(r))).catch(e => console.error(e));
+"
+```
+
+> 微信通道依赖 `lastFromUserId`，后端重启后需收到一条微信消息才能发送。失败时跳过，不阻断流程。
+
+推送成功后打标记：
 
 ```bash
 touch "$SAVE_DIR/feishu-sent.flag"

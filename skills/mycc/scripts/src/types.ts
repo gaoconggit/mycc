@@ -34,6 +34,23 @@ export interface ImageData {
   mediaType: string; // MIME 类型
 }
 
+/** 工具权限回调函数类型（兼容 SDK CanUseTool） */
+export type CanUseToolFn = (
+  toolName: string,
+  input: Record<string, unknown>,
+  options: {
+    signal: AbortSignal;
+    toolUseID: string;
+    suggestions?: any[];
+    blockedPath?: string;
+    decisionReason?: string;
+    agentID?: string;
+  },
+) => Promise<
+  | { behavior: "allow"; updatedInput?: Record<string, unknown>; updatedPermissions?: any[] }
+  | { behavior: "deny"; message: string; interrupt?: boolean }
+>;
+
 /** Chat 请求参数 */
 export interface ChatParams {
   message: string;
@@ -41,6 +58,8 @@ export interface ChatParams {
   cwd: string;
   images?: ImageData[];
   model?: string;
+  /** 工具权限回调：设置后该 session 不走 bypassPermissions，改由回调决定 */
+  canUseTool?: CanUseToolFn;
 }
 
 

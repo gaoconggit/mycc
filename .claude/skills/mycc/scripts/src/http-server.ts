@@ -7,7 +7,7 @@ import http from "http";
 import https from "https";
 import os from "os";
 import { join } from "path";
-import { readFileSync, existsSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { generateToken } from "./utils.js";
 import { adapter } from "./adapters/index.js";
 import type { PairState } from "./types.js";
@@ -21,6 +21,7 @@ import { SessionStats } from "./session-stats.js";
 import { FeishuCommands } from "./channels/feishu-commands.js";
 import { resolveAgentDir, listAgents } from "./agent-resolver.js";
 import type { WeixinChannel } from "./channels/weixin.js";
+import { PendingPermissions, formatPermissionMessage, parsePermissionReply } from "./permission-broker.js";
 
 const PORT = process.env.PORT || 18080;
 
@@ -36,6 +37,21 @@ const pairAttempts = new Map<string, { count: number; lockedUntil: number }>();
 
 /** 测试用：重置速率限制状态 */
 export function _resetPairAttempts() { pairAttempts.clear(); }
+
+function formatTimeAgo(timestamp: string | number): string {
+  const now = Date.now();
+  const time = typeof timestamp === "string" ? new Date(timestamp).getTime() : timestamp;
+  const diff = now - time;
+  const minutes = Math.floor(diff / 60000);
+  const hours = Math.floor(diff / 3600000);
+  const days = Math.floor(diff / 86400000);
+  if (minutes < 1) return "刚刚";
+  if (minutes < 60) return `${minutes}分钟前`;
+  if (hours < 24) return `${hours}小时前`;
+  if (days < 7) return `${days}天前`;
+  const date = new Date(time);
+  return `${date.getMonth() + 1}/${date.getDate()}`;
+}
 
 export class HttpServer {
   private server: http.Server | https.Server;
@@ -894,18 +910,255 @@ export class HttpServer {
             if (this.weixinChannel.isLoggedIn()) {
               // 微信用户 → CC sessionId 映射，实现上下文记忆
               const weixinSessionMap = new Map<string, string>();
+              // 微信用户 → 模型偏好
+              const weixinModelMap = new Map<string, string>();
+              const modelConfigPath = join(stateDir, "weixin", "model-config.json");
+              // 加载持久化的模型配置
+              try {
+                if (existsSync(modelConfigPath)) {
+                  const saved = JSON.parse(readFileSync(modelConfigPath, "utf-8"));
+                  for (const [k, v] of Object.entries(saved)) weixinModelMap.set(k, v as string);
+                  console.log(`[WeixinChannel] 已加载模型配置: ${weixinModelMap.size} 条`);
+                }
+              } catch { /* ignore */ }
+
+              // 权限网关：微信用户通过 /perm 或 1/2/3 确认工具权限
+              const pendingPerms = new PendingPermissions();
 
               this.weixinChannel.onMessage(async (message: string, fromUserId: string) => {
-                // 微信消息路由到 CC
+                // ── 1. 拦截权限回复 ──
+                const permReply = parsePermissionReply(message);
+                if (permReply && pendingPerms.size > 0) {
+                  if (!permReply.toolUseID) {
+                    // 数字快捷回复：只有恰好 1 个 pending 时生效
+                    const soleId = pendingPerms.getSolePendingId();
+                    if (soleId) {
+                      pendingPerms.resolve(soleId, permReply.action);
+                      console.log(`[WeixinPerm] 快捷回复: ${permReply.action} (tool=${soleId.substring(0, 12)}...)`);
+                      return;
+                    }
+                    // 多个 pending → 提示用完整命令
+                    if (pendingPerms.size > 1) {
+                      try {
+                        await (this.weixinChannel as any).sendProactive(fromUserId,
+                          `当前有 ${pendingPerms.size} 个待确认权限，请用完整命令:\n/perm allow <id>\n/perm deny <id>`);
+                      } catch { /* ignore */ }
+                      return;
+                    }
+                  } else {
+                    // /perm 完整命令
+                    if (pendingPerms.resolve(permReply.toolUseID, permReply.action)) {
+                      console.log(`[WeixinPerm] 命令回复: ${permReply.action} (tool=${permReply.toolUseID.substring(0, 12)}...)`);
+                      return;
+                    }
+                    // 未找到对应 pending → 当普通消息处理
+                  }
+                }
+
+                // ── 2. 拦截模型设置指令 ──
+                const modelMatch = message.trim().match(/^(?:\/model|设置模型)\s+(\S+)$/i);
+                if (modelMatch) {
+                  const newModel = modelMatch[1];
+                  weixinModelMap.set(fromUserId, newModel);
+                  const oldSessionId = weixinSessionMap.get(fromUserId);
+                  if (oldSessionId) {
+                    adapter.closeSession(oldSessionId);
+                    weixinSessionMap.delete(fromUserId);
+                  }
+                  try {
+                    const dir = join(stateDir, "weixin");
+                    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+                    const obj: Record<string, string> = {};
+                    for (const [k, v] of weixinModelMap) obj[k] = v;
+                    writeFileSync(modelConfigPath, JSON.stringify(obj, null, 2));
+                  } catch { /* ignore */ }
+                  try {
+                    await (this.weixinChannel as any).sendLastReply(`模型已设置为: ${newModel}`);
+                  } catch { /* ignore */ }
+                  console.log(`[WeixinChannel] 用户 ${fromUserId.substring(0, 12)}... 设置模型为 ${newModel}`);
+                  return;
+                }
+                if (/^(?:\/model|查看模型)\s*$/i.test(message.trim())) {
+                  const current = weixinModelMap.get(fromUserId) || "sonnet (默认)";
+                  try {
+                    await (this.weixinChannel as any).sendLastReply(`当前模型: ${current}`);
+                  } catch { /* ignore */ }
+                  return;
+                }
+
+                // ── 2.5 拦截会话管理指令 ──
+                const trimmed = message.trim();
+                const sendReply = async (text: string) => {
+                  try { await (this.weixinChannel as any).sendProactive(fromUserId, text); } catch { /* ignore */ }
+                };
+
+                if (/^\/new\b/i.test(trimmed) || /^\/create\b/i.test(trimmed)) {
+                  // /new [标题] — 创建新会话
+                  const title = trimmed.replace(/^\/(new|create)\s*/i, "").trim();
+                  const oldSessionId = weixinSessionMap.get(fromUserId);
+                  if (oldSessionId) {
+                    adapter.closeSession(oldSessionId);
+                    weixinSessionMap.delete(fromUserId);
+                  }
+                  await sendReply(`已创建新会话${title ? `：${title}` : ""}\n\n发送消息开始对话。`);
+                  console.log(`[WeixinChannel] 用户 ${fromUserId.substring(0, 12)}... 创建新会话`);
+                  return;
+                }
+
+                if (/^(?:\/sessions|\/list|\/history)\s*$/i.test(trimmed)) {
+                  // /sessions — 查看历史会话
+                  try {
+                    const result = await adapter.listHistory(this.cwd, 10);
+                    const convs = result.conversations;
+                    if (convs.length === 0) {
+                      await sendReply("还没有历史会话。\n\n发送消息即可开始新对话。");
+                      return;
+                    }
+                    const currentSid = weixinSessionMap.get(fromUserId);
+                    let output = `历史会话（共 ${result.total} 个，显示最近 ${convs.length} 个）\n\n`;
+                    convs.forEach((conv, i) => {
+                      const isCurrent = conv.sessionId === currentSid ? " [当前]" : "";
+                      const title = conv.customTitle || conv.firstPrompt?.substring(0, 30) || conv.lastMessagePreview?.substring(0, 30) || "未命名";
+                      const timeAgo = formatTimeAgo(conv.lastTime || conv.modified || Date.now());
+                      output += `${i + 1}. ${title}${isCurrent}\n   ${timeAgo}\n\n`;
+                    });
+                    output += "使用 /switch <序号> 切换会话";
+                    await sendReply(output);
+                  } catch (err) {
+                    await sendReply("获取会话列表失败，请重试。");
+                  }
+                  return;
+                }
+
+                if (/^\/switch\b/i.test(trimmed)) {
+                  // /switch <序号> — 切换会话
+                  const target = trimmed.replace(/^\/switch\s*/i, "").trim();
+                  if (!target) {
+                    await sendReply("请指定序号。\n\n使用 /sessions 查看所有会话。");
+                    return;
+                  }
+                  try {
+                    const result = await adapter.listHistory(this.cwd, 50);
+                    const idx = parseInt(target, 10) - 1;
+                    if (isNaN(idx) || idx < 0 || idx >= result.conversations.length) {
+                      await sendReply(`无效的序号: ${target}\n\n使用 /sessions 查看有效序号。`);
+                      return;
+                    }
+                    const targetSession = result.conversations[idx];
+                    const oldSessionId = weixinSessionMap.get(fromUserId);
+                    if (oldSessionId) adapter.closeSession(oldSessionId);
+                    weixinSessionMap.set(fromUserId, targetSession.sessionId);
+                    const title = targetSession.customTitle || targetSession.firstPrompt?.substring(0, 30) || "未命名";
+                    await sendReply(`已切换到：${title}\n\n现在发送的消息将使用这个会话。`);
+                    console.log(`[WeixinChannel] 用户 ${fromUserId.substring(0, 12)}... 切换到会话 ${targetSession.sessionId}`);
+                  } catch (err) {
+                    await sendReply("切换会话失败，请重试。");
+                  }
+                  return;
+                }
+
+                if (/^(?:\/current|\/status)\s*$/i.test(trimmed)) {
+                  // /current — 显示当前会话
+                  const currentSid = weixinSessionMap.get(fromUserId);
+                  if (!currentSid) {
+                    await sendReply("当前没有活跃会话。\n\n发送消息即可自动创建。");
+                    return;
+                  }
+                  try {
+                    const conv = await adapter.getHistory(this.cwd, currentSid);
+                    if (!conv) {
+                      await sendReply("当前会话不存在，发送消息将自动创建新会话。");
+                      weixinSessionMap.delete(fromUserId);
+                      return;
+                    }
+                    let title = "未命名会话";
+                    for (const msg of conv.messages) {
+                      if (msg.type === "custom-title" && msg.customTitle) title = msg.customTitle;
+                    }
+                    if (title === "未命名会话") {
+                      const first = conv.messages.find(m => m.type === "user" && m.message);
+                      if (first?.message?.content) {
+                        const c = first.message.content;
+                        if (typeof c === "string") title = c.substring(0, 30);
+                        else if (Array.isArray(c)) {
+                          const tb = (c as any[]).find((b: any) => b.type === "text" && b.text);
+                          if (tb) title = tb.text.substring(0, 30);
+                        }
+                      }
+                    }
+                    const model = weixinModelMap.get(fromUserId) || "sonnet (默认)";
+                    await sendReply(`当前会话\n\n标题: ${title}\n模型: ${model}\n消息数: ${conv.messages.length}`);
+                  } catch {
+                    await sendReply("获取会话信息失败，请重试。");
+                  }
+                  return;
+                }
+
+                if (/^(?:\/help|\/\?)\s*$/i.test(trimmed)) {
+                  // /help — 帮助
+                  await sendReply(
+                    "微信指令帮助\n\n" +
+                    "会话管理\n" +
+                    "/new [标题] - 创建新会话\n" +
+                    "/sessions - 查看历史会话\n" +
+                    "/switch <序号> - 切换会话\n" +
+                    "/current - 当前会话信息\n\n" +
+                    "模型设置\n" +
+                    "/model - 查看当前模型\n" +
+                    "/model <名称> - 切换模型\n\n" +
+                    "权限确认\n" +
+                    "1 - 允许一次\n" +
+                    "2 - 允许本次会话\n" +
+                    "3 - 拒绝\n\n" +
+                    "提示：直接发消息即可对话"
+                  );
+                  return;
+                }
+
+                // ── 3. 构造 canUseTool 回调（微信交互式权限确认）──
+                const weixinCanUseTool = async (
+                  toolName: string,
+                  input: Record<string, unknown>,
+                  options: { toolUseID: string; suggestions?: any[] },
+                ) => {
+                  const { toolUseID, suggestions } = options;
+
+                  // 发送权限确认消息到微信
+                  try {
+                    const permMsg = formatPermissionMessage(toolName, input, toolUseID);
+                    await (this.weixinChannel as any).sendProactive(fromUserId, permMsg);
+                  } catch (err) {
+                    // 发送失败 → 自动允许（避免阻塞会话）
+                    console.warn("[WeixinPerm] 发送权限消息失败，自动允许:", err);
+                    return { behavior: "allow" as const, updatedInput: input };
+                  }
+
+                  // 阻塞等待用户回复（最多 5 分钟）
+                  const action = await pendingPerms.waitFor(toolUseID, toolName);
+                  console.log(`[WeixinPerm] 权限决定: ${action} (tool=${toolName})`);
+
+                  if (action === "allow") {
+                    return { behavior: "allow" as const, updatedInput: input };
+                  } else if (action === "allow_session") {
+                    return {
+                      behavior: "allow" as const,
+                      updatedInput: input,
+                      updatedPermissions: suggestions || [],
+                    };
+                  } else {
+                    return { behavior: "deny" as const, message: "用户拒绝" };
+                  }
+                };
+
+                // ── 4. 微信消息路由到 CC ──
                 console.log(`[WeixinChannel] 转发消息到 CC (user=${fromUserId.substring(0, 12)}...): ${message.substring(0, 50)}...`);
                 const sessionId = weixinSessionMap.get(fromUserId);
+                const model = weixinModelMap.get(fromUserId);
                 const chunks: string[] = [];
                 let resolvedSessionId = sessionId;
 
-                // adapter.chat 失败才清 session
                 try {
-                  for await (const data of adapter.chat({ message, sessionId, cwd: this.cwd })) {
-                    // 提取新会话的 sessionId
+                  for await (const data of adapter.chat({ message, sessionId, cwd: this.cwd, model, canUseTool: weixinCanUseTool })) {
                     if (!resolvedSessionId && data && typeof data === "object" && "type" in data) {
                       const d = data as any;
                       if (d.type === "system" && d.session_id) {
@@ -914,7 +1167,6 @@ export class HttpServer {
                         console.log(`[WeixinChannel] 新会话 sessionId=${resolvedSessionId} (user=${fromUserId.substring(0, 12)}...)`);
                       }
                     }
-                    // 收集 assistant 回复文本
                     if (data && typeof data === "object" && "type" in data) {
                       if ((data as any).type === "assistant" && "message" in (data as any)) {
                         const msg = (data as any).message;
@@ -933,7 +1185,6 @@ export class HttpServer {
                   weixinSessionMap.delete(fromUserId);
                 }
 
-                // 发送回复（失败不影响 session 映射）
                 try {
                   if (chunks.length > 0 && this.weixinChannel) {
                     const fullReply = chunks.join("");

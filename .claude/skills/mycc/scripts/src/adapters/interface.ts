@@ -6,7 +6,7 @@
  * - custom.ts: 用户自定义实现
  */
 
-import type { ChatParams, ConversationSummary, ConversationHistory } from "../types.js";
+import type { ChatParams, ConversationSummary, ConversationHistory, CanUseToolFn } from "../types.js";
 import type { SDKSession } from "@anthropic-ai/claude-agent-sdk";
 
 /** SSE 事件 */
@@ -17,6 +17,8 @@ export interface SessionParams {
   sessionId?: string;
   model?: string;
   cwd?: string;
+  /** 工具权限回调：设置后该 session 不走 bypassPermissions */
+  canUseTool?: CanUseToolFn;
 }
 
 /** Adapter 接口 */
