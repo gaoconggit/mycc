@@ -67,6 +67,8 @@ test_table.txt
 # ====================================
 .claude/skills/ipsapro-attendance/
 skills/ipsapro-attendance/
+.claude/skills/restart-ngrok/
+skills/restart-ngrok/
 .claude/skills/agent-browser/
 .claude/skills/ieee-search/
 .claude/skills/obsidian-api/
