@@ -434,10 +434,14 @@ document.getElementById('token').addEventListener('keydown',function(e){if(e.key
 </script></body></html>`;
 
 // ===== Terminal page =====
-const TABS_JSON = JSON.stringify(TABS.map(serializeTab));
+// NOTE: TABS mutates at runtime (create_tab / delete_tab), so the HTML must be
+// rebuilt per request — otherwise a refresh serves a stale snapshot and resurrects
+// deleted tabs / loses newly-created ones. TAB_TEMPLATES is static, so caching is fine.
 const TAB_TEMPLATES_JSON = JSON.stringify(serializeTabTemplates());
 
-const TERMINAL_HTML = `<!DOCTYPE html>
+function buildTerminalHtml() {
+  const TABS_JSON = JSON.stringify(TABS.map(serializeTab));
+  return `<!DOCTYPE html>
 <html lang="zh"><head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
@@ -1025,7 +1029,7 @@ function promptRenameTab(tabId) {
   lastRenameActionAt = Date.now();
   var nextLabel = window.prompt('重命名标签页', tab.label);
   if (nextLabel === null) return;
-  nextLabel = String(nextLabel).trim().replace(/\s+/g, ' ');
+  nextLabel = String(nextLabel).trim().replace(/\\s+/g, ' ');
   if (!nextLabel || nextLabel === tab.label) return;
   requestRenameTab(tabId, nextLabel);
 }
@@ -2537,6 +2541,7 @@ termWrapEl.addEventListener('drop', function(e) {
 });
 </script>
 </body></html>`;
+}
 
 // ===== Cookie helpers =====
 function parseCookies(req) {
@@ -2610,7 +2615,7 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/terminal') {
     if (!isAuthed(req)) { res.writeHead(302, { Location: '/' }); res.end(); return; }
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...NO_CACHE_HEADERS });
-    res.end(TERMINAL_HTML);
+    res.end(buildTerminalHtml());
     return;
   }
 
